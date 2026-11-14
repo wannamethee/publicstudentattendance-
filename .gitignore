@@ -93,3 +93,6 @@ tools/tessdata/
 # on every restart without the app changing
 frontend/build/web/**/*.gz
 frontend/build/web/**/*.gz.tmp
+
+# blank edition: the empty course import forms ship with the program
+!courses_2569_term2.xlsx
