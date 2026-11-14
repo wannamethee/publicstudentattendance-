@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="frontend">
+  <link rel="apple-touch-icon" href="/api/v1/settings/school-logo?v=1793594851">
+
+  <!-- Favicon / School Logo Tab Icon -->
+  <link rel="icon" type="image/png" href="/api/v1/settings/school-logo?v=1793594851" id="app-favicon"/>
+
+  <title>frontend</title>
+  <link rel="manifest" href="manifest.json">
+  <!-- Google Fonts: 6 Thai Fonts Preload (Sarabun, Prompt, Kanit, Mitr, Chakra Petch, Noto Sans Thai) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=Kanit:wght@300;400;500;600;700&family=Mitr:wght@300;400;500;600&family=Noto+Sans+Thai:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script>
+    // Dynamically update browser tab favicon with school logo
+    function setAppFavicon(url) {
+      var links = document.querySelectorAll("link[rel*='icon']");
+      if (links.length === 0) {
+        var l = document.createElement('link');
+        l.type = 'image/png';
+        l.rel = 'icon';
+        l.href = url;
+        document.head.appendChild(l);
+      } else {
+        links.forEach(function(l) { l.href = url; });
+      }
+    }
+    window.setAppFavicon = setAppFavicon;
+
+    // Check school logo on startup to keep tab icon up to date
+    fetch('/api/v1/settings/school-logo/info')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.has_logo) {
+          var ts = data.logo_updated || Date.now();
+          setAppFavicon('/api/v1/settings/school-logo?v=' + ts);
+        }
+      })
+      .catch(function() {});
+
+  <script>
+    // Unregister legacy service workers and clear caches during development/local use
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for (let registration of registrations) {
+          registration.unregister();
+        }
+      });
+    }
+    if (window.caches) {
+      caches.keys().then(function(keys) {
+        for (let key of keys) {
+          caches.delete(key);
+        }
+      });
+    }
+  </script>
+  <script src="flutter_bootstrap.js?v=1793784394" async></script>
+</body>
+</html>

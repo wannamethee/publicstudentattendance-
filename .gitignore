@@ -1,0 +1,95 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Database & Sensitive Data (PDPA Protection)
+school_archive.db
+school_archive.db-journal
+*.db
+*.sqlite3
+
+# Uploads & Generated Outputs (Contains real student data)
+uploads/
+outputs/
+*.pdf
+*_filled.xlsx
+*_print_ready.pdf
+*.xlsx
+!template_*.xlsx
+
+# Excel temporary / lock files
+~$*
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+frontend/build/*
+!frontend/build/web/
+scratch_*.py
+output.json
+frontend/.pub-cache/
+frontend/.pub/
+
+# IDE & Editor
+.vscode/
+.idea/
+cloudflared.exe
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# Secrets
+ngrok_token.txt
+ngrok_domain.txt
+*.env
+auth_secret.txt
+
+# standby (two-machine) runtime files: state, flags, logs, DB copies with personal data
+standby_config.json
+standby_state.json
+standby_state.json.tmp
+standby_sync.log
+STANDBY_ACTIVE
+HELD_BY_STANDBY
+.standby_staging/
+.standby_bundle_*
+backups/standby/
+
+# Move bundles / backups: contain the database, citizen IDs, the login signing secret and the ngrok token
+*.zip
+*.tar.gz
+tmp/
+backups/
+
+# More real school data outside uploads/ and outputs/ (PDPA, and exam files stay in the school):
+# exam pictures, student photos, home-visit reports and photos, PDF page cache, Word reports
+data/
+output/
+*.db-wal
+*.db-shm
+*.bak
+template_*.before_*.xlsx
+# pictures / Word files rendered from real pages while testing (names, scores); the test scripts are kept
+scratch/*
+!scratch/*.py
+# installed or downloaded, not source: npm packages, Tesseract language data (22 MB)
+node_modules/
+tools/tessdata/
+
+# the server gzips the web build next to each file at startup (main.py _PrecompressedStatic), so these change
+# on every restart without the app changing
+frontend/build/web/**/*.gz
+frontend/build/web/**/*.gz.tmp

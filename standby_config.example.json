@@ -1,0 +1,8 @@
+{
+  "_help": "คัดลอกเป็น standby_config.json แล้วแก้ 2 บรรทัดแรก: ชื่อผู้ใช้@ชื่อเครื่อง Linux ใน Tailscale และโฟลเดอร์ระบบบน Linux",
+  "primary_ssh": "teacher@school-server",
+  "primary_dir": "/home/teacher/schooltranscription",
+  "primary_python": "venv/bin/python",
+  "public_url": "<ลิงก์ออนไลน์ ngrok ของโรงเรียน>",
+  "port": 8000
+}

@@ -1,0 +1,36 @@
+{
+  "_comment": "outline-hash -> Thai mark. Labelled by reading the words each glyph appears in (15 SGS PDFs, ภาคเรียน 2/2568). Run `python thai_font_fix.py --scan <pdf>` to list unlabelled marks.",
+  "Bold": {
+    "843583a87a": "ี",
+    "16a0ebea09": "ี",
+    "dee54342c9": "่",
+    "d06e80d608": "่",
+    "6b33c42bbe": "่",
+    "2bfa3539fe": "ั",
+    "ae6e056060": "ิ",
+    "41261e6866": "้",
+    "027c983e47": "้",
+    "2cccf136ff": "ู",
+    "715e71fc2a": "ุ",
+    "52836f0e25": "ึ",
+    "92062ac21b": "ื",
+    "74ada65453": "์",
+    "096d60a387": "ํ"
+  },
+  "Regular": {
+    "ef2066c834": "ิ",
+    "43b512516a": "ี",
+    "2ce9af0ad0": "ิ",
+    "5a5c3b9c84": "่",
+    "4f7cb690f6": "่",
+    "bcaad3ebb8": "้",
+    "2ad855af0a": "ั",
+    "48dba59a70": "ุ",
+    "6c73daeec2": "ู",
+    "53037458b8": "ื",
+    "e7c65b6fdf": "ึ",
+    "c328da1099": "์",
+    "cce16d43d1": "์",
+    "c90fb11f9b": "ํ"
+  }
+}

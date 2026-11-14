@@ -1,0 +1,8 @@
+{
+  "name": "schooltranscription-tunnel",
+  "private": true,
+  "description": "ngrok tunnel for the school ปพ.5 server (start_ngrok.js)",
+  "dependencies": {
+    "@ngrok/ngrok": "^1.7.0"
+  }
+}
