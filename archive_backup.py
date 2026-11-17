@@ -41,7 +41,8 @@ SKIP_DIRS = {"pdf_page_cache", "__pycache__"}
 KEEP_DAYS = 7
 SECRETS = {"ngrok_token.txt", "auth_secret.txt", "standby_config.json", "gemini_api_key.txt"}
 PROGRAM_TOP = ["ngrok_domain.txt", "*.py", "*.js", "package.json", "requirements.txt", "*.sh", "*.bat", "*.vbs", "*.md", "LICENSE",
-               "template_ปพ5_blank.xlsx", "thai_glyph_labels.json", "courses_*.xlsx", "courses_*.csv", "*.example.json"]
+               "template_ปพ5_blank.xlsx", "thai_glyph_labels.json", "courses_*.xlsx", "courses_*.csv", "*.example.json",
+               "lesson_topics.json"]   # the AI page's topic library (git-ignored, so only backups keep it)
 PROGRAM_DIRS = ["deploy", "tests", "frontend/build/web", "frontend/lib", "frontend/web", "frontend/assets"]
 PROGRAM_FILES = ["frontend/pubspec.yaml", "frontend/pubspec.lock", "frontend/analysis_options.yaml"]
 SKIP_PARTS = {"__pycache__", "node_modules", "venv", ".venv", ".dart_tool"}

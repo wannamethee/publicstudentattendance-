@@ -110,7 +110,7 @@ class _AiSettingsCardState extends State<AiSettingsCard> {
                 Text('ตัวช่วย AI ออกข้อสอบ (Gemini)', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                 Text(
                   'ครูผู้สอนใช้ร่างแบบทดสอบย่อย / กลางภาค / ปลายภาค ในเมนู "ตัวช่วย AI" • กุญแจเก็บบนเครื่องเซิร์ฟเวอร์เท่านั้น '
-                  '(ไม่อยู่ในไฟล์สำรอง ต้องใส่ใหม่หลังกู้คืน) • ส่งเฉพาะตัวชี้วัดและเนื้อหาที่ครูเลือก ไม่ส่งข้อมูลนักเรียน',
+                  '(ไม่อยู่ในไฟล์สำรอง ต้องใส่ใหม่หลังกู้คืน) • ส่งเฉพาะเรื่องที่ครูเลือกและเนื้อหาที่ครูให้ ไม่ส่งข้อมูลนักเรียน',
                   style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
                 ),
               ]),
@@ -126,6 +126,8 @@ class _AiSettingsCardState extends State<AiSettingsCard> {
               const SizedBox(width: 6),
               Expanded(child: Text(configured ? 'ตั้งกุญแจแล้ว (${st['key_hint'] ?? ''})' : 'ยังไม่ได้ตั้งกุญแจ ครูยังใช้ตัวช่วย AI ไม่ได้')),
             ]),
+            const SizedBox(height: 6),
+            _libraryLine(st),
             const SizedBox(height: 12),
             Wrap(spacing: 12, runSpacing: 12, children: [
               SizedBox(
@@ -188,5 +190,26 @@ class _AiSettingsCardState extends State<AiSettingsCard> {
         ]),
       ),
     );
+  }
+
+  /// คลังเรื่อง (lesson_topics.json, imported from Academic Hub by a script): how big it is and when it came in
+  Widget _libraryLine(Map<String, dynamic> st) {
+    final lib = Map<String, dynamic>.from(st['topic_library'] as Map? ?? {});
+    final subjects = (lib['subjects'] as List? ?? []).length;
+    final chapters = '${lib['chapters'] ?? 0}'.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',');
+    final at = DateTime.tryParse('${lib['imported_at'] ?? ''}');
+    final when = at == null ? '' : ' เมื่อ ${at.day}/${at.month}/${at.year + 543}';
+    return Row(children: [
+      Icon(subjects > 0 ? Icons.menu_book_rounded : Icons.info_outline, size: 20, color: subjects > 0 ? Colors.green : Colors.grey),
+      const SizedBox(width: 6),
+      Expanded(
+        child: Text(
+          subjects > 0
+              ? 'คลังเรื่องสำหรับเลือกบทที่จะออกข้อสอบ: $subjects วิชา $chapters บท (นำเข้าจาก Academic Hub$when)'
+              : 'ยังไม่มีคลังเรื่อง: ครูพิมพ์เรื่องที่จะออกข้อสอบเองได้',
+          style: const TextStyle(fontSize: 13),
+        ),
+      ),
+    ]);
   }
 }

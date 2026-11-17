@@ -2,7 +2,9 @@
 ตัวช่วย AI ออกข้อสอบ (Gemini) - owner's decisions 17 พ.ย. 2569:
   * Gemini, the key kept on this server (gemini_api_key.txt: git-ignored, never in the nightly backup, carried by the
     Linux migration bundle like auth_secret.txt). An admin sets it on the settings page; it is never sent back.
-  * Only what the teacher chooses goes to Google: the course's ตัวชี้วัด and the lesson content they attach or type.
+  * Only what the teacher chooses goes to Google: the topics (เรื่อง) they tick from the topic library
+    (lesson_topics.py, with every chapter of that grade as context) or type, and the lesson content they attach
+    or type.
     Never student data, never the exams/quizzes already stored here.
   * Every teacher may use it for the courses they teach, a daily limit per teacher (admin sets it, default 30).
     Students, guests and the director never reach it (auth.py: not in their lists; the director cannot write).
@@ -36,6 +38,10 @@ DEFAULT_DAILY_LIMIT = 30
 FALLBACK_MODELS = (DEFAULT_MODEL, "gemini-flash-lite-latest")
 BUSY = (500, 503, 504)
 BUSY_WAIT = 3
+# A model that takes the request and then never answers is overloaded too (seen 17 พ.ย. 2569: no reply in 240 s
+# while it gave 503 to small requests): the next model gets its turn, with a shorter wait so a teacher is not
+# left looking at the spinner for more than about 6 minutes in the worst case.
+FALLBACK_TIMEOUT = 120
 # SCHOOL_AI_URL: only for the sandbox tests (a mock Gemini on this machine); never set on the live server
 API_URL = os.environ.get("SCHOOL_AI_URL") or "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_QUESTIONS = 60
@@ -207,49 +213,66 @@ def docx_text(data: bytes) -> str:
 
 # ---------------------------------------------------------------- the request
 
-SCHEMA_HELP = """รูปแบบ JSON ของแต่ละชนิด (ทุกข้อต้องมี "explain" และ "indicator"):
-- ปรนัย: {"type":"choice","q":"โจทย์","choices":["ตัวเลือก1","ตัวเลือก2","ตัวเลือก3","ตัวเลือก4"],"answer":0,"points":1,"explain":"...","indicator":1}
+SCHEMA_HELP = """รูปแบบ JSON ของแต่ละชนิด (ทุกข้อต้องมี "explain" และ "topic"):
+- ปรนัย: {"type":"choice","q":"โจทย์","choices":["ตัวเลือก1","ตัวเลือก2","ตัวเลือก3","ตัวเลือก4"],"answer":0,"points":1,"explain":"...","topic":1}
   answer = ลำดับของตัวเลือกที่ถูก เริ่มที่ 0, ไม่ต้องใส่ ก. ข. ค. หน้าตัวเลือก, ตัวลวงต้องสมเหตุสมผล
-- เติมตัวเลข: {"type":"number","q":"โจทย์","answer":"12.5","tolerance":0,"unit":"เซนติเมตร","points":1,"explain":"...","indicator":1}
+- เติมตัวเลข: {"type":"number","q":"โจทย์","answer":"12.5","tolerance":0,"unit":"เซนติเมตร","points":1,"explain":"...","topic":1}
   answer เป็นตัวเลขล้วน (เศษส่วนเขียน 3/4 ได้)
-- เติมคำ: {"type":"text","q":"โจทย์ ... ______","answer":"คำตอบ / คำตอบอื่นที่ยอมรับ","points":1,"explain":"...","indicator":1}
-- ถูก/ผิด: {"type":"truefalse","q":"ข้อความต่อไปนี้ถูกหรือผิด","items":[{"text":"ข้อความ","answer":true}],"points":1,"explain":"...","indicator":1}
+- เติมคำ: {"type":"text","q":"โจทย์ ... ______","answer":"คำตอบ / คำตอบอื่นที่ยอมรับ","points":1,"explain":"...","topic":1}
+- ถูก/ผิด: {"type":"truefalse","q":"ข้อความต่อไปนี้ถูกหรือผิด","items":[{"text":"ข้อความ","answer":true}],"points":1,"explain":"...","topic":1}
   points คือคะแนนต่อข้อความ
-- จับคู่: {"type":"match","q":"จับคู่ให้ถูกต้อง","items":[{"text":"ด้านซ้าย","answer":0}],"options":[{"text":"ด้านขวา"}],"points":1,"explain":"...","indicator":1}
+- จับคู่: {"type":"match","q":"จับคู่ให้ถูกต้อง","items":[{"text":"ด้านซ้าย","answer":0}],"options":[{"text":"ด้านขวา"}],"points":1,"explain":"...","topic":1}
   answer ของแต่ละข้อย่อย = ลำดับใน options เริ่มที่ 0, options ควรมีมากกว่า items 1-2 ตัว, points ต่อคู่
-- เติมคำในเรื่อง: {"type":"cloze","q":"เติมคำในช่องว่าง","text":"เนื้อเรื่อง ... [[คำตอบ]] ... [[คำตอบ / คำที่ยอมรับ]] ...","bank":[],"points":1,"explain":"...","indicator":1}
+- เติมคำในเรื่อง: {"type":"cloze","q":"เติมคำในช่องว่าง","text":"เนื้อเรื่อง ... [[คำตอบ]] ... [[คำตอบ / คำที่ยอมรับ]] ...","bank":[],"points":1,"explain":"...","topic":1}
   points ต่อช่อง, bank ว่างได้ ถ้าใส่ต้องมีทุกคำตอบอยู่ใน bank
-- เขียนตอบ: {"type":"photo","q":"โจทย์ให้แสดงวิธีทำ/อธิบาย","guide":"แนวคำตอบและเกณฑ์ให้คะแนน","points":5,"explain":"...","indicator":1}"""
+- เขียนตอบ: {"type":"photo","q":"โจทย์ให้แสดงวิธีทำ/อธิบาย","guide":"แนวคำตอบและเกณฑ์ให้คะแนน","points":5,"explain":"...","topic":1}"""
 
 
 def build_prompt(spec: Dict[str, Any]) -> str:
     target = {"quiz": "แบบทดสอบย่อย (ตรวจอัตโนมัติ)", "midterm": "ข้อสอบกลางภาค", "final": "ข้อสอบปลายภาค"}[spec["target"]]
-    inds = "\n".join(f"{i}. {t}" for i, t in spec["indicators"]) or "(ครูไม่ได้ระบุ ให้ยึดตามเนื้อหา)"
+    topics = spec.get("topics") or []
+    scope = "\n".join(f"{i}. {t['text']}" for i, t in enumerate(topics, start=1)) or "(ครูไม่ได้เลือกเรื่อง ให้ยึดตามเนื้อหาที่ให้มา)"
+    context = spec.get("topic_context") or ""
     counts = "\n".join(f"- {KINDS[k]} ({k}): {n} ข้อ" for k, n in spec["kinds"].items())
     content = spec.get("content_text") or ""
-    return f"""คุณเป็นผู้ช่วยครูมัธยมไทย ออก{target} รายวิชา {spec['course_code']} {spec.get('course_name') or ''} ชั้น {spec.get('level') or '-'}
+    rules = [
+        "ภาษาไทยที่ถูกต้อง เหมาะกับวัยผู้เรียน (ถ้าเป็นวิชาภาษาต่างประเทศ ใช้ภาษานั้นในโจทย์ได้)",
+        "ออกข้อสอบเฉพาะเรื่องที่ต้องออกข้างบน ยึดเนื้อหาที่ครูให้มาเป็นหลัก ถ้าเนื้อหาไม่พอ ให้ออกตามหลักสูตรแกนกลางของเรื่องนั้น"
+        "ในชั้นนี้ ห้ามแต่งข้อเท็จจริงที่ไม่แน่ใจ",
+        "เฉลยต้องถูกต้อง ตรวจคำตอบซ้ำก่อนส่ง ข้อคำนวณให้คิดเลขทีละขั้นแล้วตรวจผลอีกครั้ง",
+        '"explain" = วิธีทำหรือเหตุผลของเฉลยให้ครูตรวจ ถ้าเป็นข้อคำนวณต้องแสดงวิธีทำทีละขั้น พร้อมผลลัพธ์',
+        "กระจายข้อให้ครอบคลุมทุกเรื่องและหัวข้อย่อยที่เลือก ไม่ถามซ้ำเรื่องเดียวกัน ตัวเลือกที่ถูกในข้อปรนัยกระจายตำแหน่งกัน",
+        "ห้ามใส่ชื่อจริงของบุคคล ใช้ชื่อสมมติ",
+    ]
+    if context:
+        rules.append("รายชื่อบทเรียนทั้งชั้นมีไว้ให้รู้บริบท: บทก่อนหน้าคือสิ่งที่นักเรียนเรียนมาแล้ว ใช้เป็นพื้นฐานของโจทย์ได้ "
+                     "แต่ห้ามออกข้อสอบจากบทที่ไม่ได้เลือก และโจทย์ห้ามใช้ความรู้จากบทที่เรียนหลังเรื่องที่เลือก")
+    if spec.get("instructions"):
+        rules.append("คำสั่งเพิ่มเติมจากครู: " + spec["instructions"])
+    rule_text = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, start=1))
+    if content:
+        material = "เนื้อหาบทเรียนที่ครูพิมพ์มา:\n" + content[:MAX_TEXT_CHARS]
+    elif spec.get("has_files"):
+        material = "เนื้อหาบทเรียนอยู่ในไฟล์ที่แนบ"
+    else:
+        material = "ครูไม่ได้แนบเนื้อหา ให้ออกตามเรื่องที่เลือกและหลักสูตรของชั้นนี้"
+    return f"""คุณเป็นผู้ช่วยครูไทย ออก{target} รายวิชา {spec['course_code']} {spec.get('course_name') or ''} ชั้น {spec.get('level') or '-'}
 
-ตัวชี้วัดที่ต้องวัด (ใช้ลำดับตัวเลขนี้ในช่อง "indicator"):
-{inds}
-
+เรื่องที่ต้องออกข้อสอบ (ใช้ลำดับตัวเลขนี้ในช่อง "topic"):
+{scope}
+{(chr(10) + context + chr(10)) if context else ''}
 จำนวนข้อที่ต้องการ:
 {counts}
 ระดับความยาก: {LEVELS.get(spec.get('difficulty') or 'mixed', LEVELS['mixed'])}
 
 กติกา:
-1. ภาษาไทยที่ถูกต้อง เหมาะกับวัยผู้เรียน (ถ้าเป็นวิชาภาษาต่างประเทศ ใช้ภาษานั้นในโจทย์ได้)
-2. ออกข้อสอบจากเนื้อหาที่ให้มาเท่านั้น ถ้าเนื้อหาไม่พอ ออกตามตัวชี้วัดในระดับชั้นนี้ ห้ามแต่งข้อเท็จจริงที่ไม่แน่ใจ
-3. เฉลยต้องถูกต้อง ตรวจคำตอบซ้ำก่อนส่ง ข้อคำนวณให้คิดเลขทีละขั้นแล้วตรวจผลอีกครั้ง
-4. "explain" = วิธีทำหรือเหตุผลของเฉลยให้ครูตรวจ ถ้าเป็นข้อคำนวณต้องแสดงวิธีทำทีละขั้น พร้อมผลลัพธ์
-5. กระจายข้อให้ครอบคลุมทุกตัวชี้วัดที่ให้มา ไม่ถามซ้ำเรื่องเดียวกัน ตัวเลือกที่ถูกในข้อปรนัยกระจายตำแหน่งกัน
-6. ห้ามใส่ชื่อจริงของบุคคล ใช้ชื่อสมมติ
-{('7. คำสั่งเพิ่มเติมจากครู: ' + spec['instructions']) if spec.get('instructions') else ''}
+{rule_text}
 
 {SCHEMA_HELP}
 
 ตอบเป็น JSON อย่างเดียว รูปแบบ {{"questions":[...]}} ไม่ต้องมีข้อความอื่น
 
-{('เนื้อหาบทเรียนที่ครูพิมพ์มา:' + chr(10) + content[:MAX_TEXT_CHARS]) if content else 'เนื้อหาบทเรียนอยู่ในไฟล์ที่แนบ'}"""
+{material}"""
 
 
 def _post(model_name: str, body: Dict[str, Any], key: str, timeout: int) -> Dict[str, Any]:
@@ -271,6 +294,15 @@ def _http_error(e: urllib.error.HTTPError, name: str) -> str:
     return f"AI ทำงานไม่สำเร็จ: {hint}" + (f" ({msg[:200]})" if msg else "")
 
 
+def answer_timeout(n_questions: int, has_files: bool) -> int:
+    """
+    Seconds to wait for the first model: about 3 s a question (9 questions took 29 s on 17 พ.ย.), more when it has
+    to read files, and room for a slow start. A small quiz then waits 90 s, not 4 minutes, on a model that took the
+    request and hangs before the next model gets it (FALLBACK_TIMEOUT).
+    """
+    return max(90, min(240, 60 + 4 * n_questions + (30 if has_files else 0)))
+
+
 def ask(parts: List[Dict[str, Any]], db_path: str = DB_PATH, timeout: int = 240) -> Tuple[str, str]:
     """Gemini's text reply, and the model that wrote it: the chosen one, or the next of FALLBACK_MODELS."""
     key = _key()
@@ -281,20 +313,24 @@ def ask(parts: List[Dict[str, Any]], db_path: str = DB_PATH, timeout: int = 240)
     chosen = model(db_path)
     plan = [chosen] + [m for m in FALLBACK_MODELS if m != chosen]
     for i, name in enumerate(plan):
+        wait = timeout if i == 0 else min(timeout, FALLBACK_TIMEOUT)
         try:
             try:
-                res = _post(name, body, key, timeout)
+                res = _post(name, body, key, wait)
             except urllib.error.HTTPError as e:
                 if e.code not in BUSY:
                     raise
                 time.sleep(BUSY_WAIT)   # most spikes are short: once more before trying the next model
-                res = _post(name, body, key, timeout)
+                res = _post(name, body, key, wait)
             break
         except urllib.error.HTTPError as e:
             if e.code in (404, 429) + BUSY and i + 1 < len(plan):
                 continue                # a wrong key or a bad request: another model would not help
             raise RuntimeError(_http_error(e, name)) from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
+            timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+            if timed_out and i + 1 < len(plan):
+                continue                # no answer in time: that model is overloaded, not the line
             raise RuntimeError(f"ติดต่อ AI ไม่ได้ (เครื่องเซิร์ฟเวอร์ต่ออินเทอร์เน็ตไม่ได้หรือหมดเวลา): {e}") from None
     cands = res.get("candidates") or []
     if not cands:
@@ -325,7 +361,7 @@ def parse_reply(text: str) -> List[Dict[str, Any]]:
     return [q for q in qs if isinstance(q, dict)]
 
 
-def clean_generated(raw: List[Dict[str, Any]], allowed: List[str], indicators: Dict[int, str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+def clean_generated(raw: List[Dict[str, Any]], allowed: List[str], n_topics: int) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Each question through the same check as a typed one; a broken one is dropped with a note, not the whole set."""
     out, notes = [], []
     for n, item in enumerate(raw, start=1):
@@ -344,11 +380,11 @@ def clean_generated(raw: List[Dict[str, Any]], allowed: List[str], indicators: D
             continue
         q = q[0]
         try:
-            ind = int(item.get("indicator"))
+            tn = int(item.get("topic"))
         except (TypeError, ValueError):
-            ind = None
-        if ind in indicators:
-            q["indicator"] = ind
+            tn = 0
+        if 1 <= tn <= n_topics:
+            q["topic"] = tn             # shown on the review card, removed before saving
         out.append(q)
     return out[:MAX_QUESTIONS], notes
 
@@ -356,8 +392,8 @@ def clean_generated(raw: List[Dict[str, Any]], allowed: List[str], indicators: D
 def generate(spec: Dict[str, Any], files: List[Tuple[str, bytes]], user: Dict[str, Any],
              db_path: str = DB_PATH) -> Dict[str, Any]:
     """
-    spec: target (quiz|midterm|final), course_code, course_name, level, indicators [(n, text)], kinds {kind: count},
-          difficulty, content_text, instructions
+    spec: target (quiz|midterm|final), course_code, course_name, level, topics [{label, text}] and topic_context
+          (lesson_topics.resolve), kinds {kind: count}, difficulty, content_text, instructions
     """
     if spec.get("target") not in ("quiz", "midterm", "final"):
         raise ValueError("เลือกว่าจะออกแบบทดสอบย่อย กลางภาค หรือปลายภาค")
@@ -380,23 +416,24 @@ def generate(spec: Dict[str, Any], files: List[Tuple[str, bytes]], user: Dict[st
         part, note = material_part(fname, data)
         parts.append(part)
         names.append(note)
-    if not parts and not (spec.get("content_text") or "").strip() and not spec.get("indicators"):
-        raise ValueError("ใส่ตัวชี้วัด หรือแนบ/พิมพ์เนื้อหาบทเรียนอย่างน้อย 1 อย่าง")
+    if not parts and not (spec.get("content_text") or "").strip() and not spec.get("topics"):
+        raise ValueError("เลือกเรื่องที่จะออกข้อสอบ หรือแนบ/พิมพ์เนื้อหาบทเรียนอย่างน้อย 1 อย่าง")
+    spec["has_files"] = bool(parts)
     code = user.get("code") or ""
     _take_one(code, db_path)
     try:
-        reply, used = ask([{"text": build_prompt(spec)}] + parts, db_path)
+        reply, used = ask([{"text": build_prompt(spec)}] + parts, db_path, answer_timeout(sum(kinds.values()), bool(parts)))
         raw = parse_reply(reply)
     except Exception:
         _give_back(code, db_path)
         raise
-    indicators = {int(i): t for i, t in spec.get("indicators") or []}
-    qs, notes = clean_generated(raw, allowed, indicators)
+    topics = spec.get("topics") or []
+    qs, notes = clean_generated(raw, allowed, len(topics))
     if not qs:
         _give_back(code, db_path)
         raise RuntimeError("AI ร่างข้อสอบที่ใช้ได้ไม่ได้เลย ลองเพิ่มเนื้อหาหรือกดสร้างใหม่" + (f" ({notes[0]})" if notes else ""))
     chosen = model(db_path)
-    return {"questions": qs, "notes": notes, "files": names, "model": used,
+    return {"questions": qs, "notes": notes, "files": names, "topics": [t["label"] for t in topics], "model": used,
             "model_note": "" if used == chosen else f"รุ่น {chosen} ใช้ไม่ได้ตอนนี้ จึงให้รุ่นสำรอง {used} ร่างแทน ตรวจเฉลยให้ละเอียด",
             "left_today": max(0, daily_limit(db_path) - used_today(code, db_path))}
 

@@ -2155,6 +2155,18 @@ class ApiService {
     return Map<String, dynamic>.from(r['data']);
   }
 
+  /// คลังเรื่อง: chapters of one subject and grade; with only the course, its subject and grade are guessed
+  Future<Map<String, dynamic>> getAiTopics({required String courseCode, required String term, required String year, String? subject, String? grade}) async {
+    final r = await _examRequest('GET', '/api/v1/ai/topics', query: {
+      'course_code': courseCode,
+      'term': term,
+      'year': year,
+      if (subject != null) 'subject': subject,
+      if (grade != null) 'grade': grade,
+    });
+    return Map<String, dynamic>.from(r['data']);
+  }
+
   /// ผู้ดูแลระบบ: the key is sent once and never comes back (only its last 4 characters)
   Future<Map<String, dynamic>> saveAiSettings({String? apiKey, String? model, int? dailyLimit, bool clearKey = false}) async {
     final r = await _examRequest('POST', '/api/v1/ai/settings', body: {

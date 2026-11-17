@@ -17,6 +17,7 @@ import pp5_labels
 import school_profile
 import app_credits
 import ai_assist
+import lesson_topics
 from urllib.parse import quote
 # CRITICAL WDAC WORKAROUND for pdfplumber parsing on Windows
 os.environ["CHARSET_NORMALIZER_USE_MYPYC"] = "0"
@@ -5617,10 +5618,17 @@ def save_quiz_api(payload: SaveQuizRequest, request: Request):
 
 # ================================================================ ตัวช่วย AI ออกข้อสอบ (ai_assist.py)
 
+def _ai_status(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {**ai_assist.status(user), "topic_library": lesson_topics.catalog()}
+
+
 @app.get("/api/v1/ai/status")
 def ai_status_api(request: Request):
-    """Is the AI set up, today's uses left for this teacher; an admin also gets the last 4 characters of the key."""
-    return {"status": "success", "data": ai_assist.status(current_user(request))}
+    """
+    Is the AI set up, today's uses left for this teacher; an admin also gets the last 4 characters of the key.
+    topic_library = the subjects and grades of the topic library (lesson_topics.py) for the page's pickers.
+    """
+    return {"status": "success", "data": _ai_status(current_user(request))}
 
 
 class AiSettingsRequest(BaseModel):
@@ -5637,7 +5645,7 @@ def ai_settings_api(payload: AiSettingsRequest, request: Request):
         ai_assist.save_settings(payload.api_key, payload.model, payload.daily_limit, payload.clear_key)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": "success", "data": ai_assist.status(current_user(request))}
+    return {"status": "success", "data": _ai_status(current_user(request))}
 
 
 @app.post("/api/v1/ai/test")
@@ -5650,12 +5658,38 @@ def ai_test_api(request: Request):
     return {"status": "success", "message": msg}
 
 
+@app.get("/api/v1/ai/topics")
+def ai_topics_api(request: Request, course_code: str = "", term: str = "", year: str = "", subject: str = "", grade: str = ""):
+    """
+    Chapters of one subject and grade from the topic library (lesson_topics.py, imported from Academic Hub). With only
+    a course, its subject and grade are guessed from the course code, name and level. suggested_groups = the groups
+    (ภาคเรียนที่ 2, เพิ่มเติม, พลศึกษา, ...) that course most likely teaches: the page opens them and folds the rest.
+    """
+    user = current_user(request)
+    if user.get("role") not in ("teacher", "admin"):
+        raise HTTPException(status_code=403, detail="ตัวช่วย AI สำหรับครูผู้สอน")
+    c = None
+    if course_code:
+        with get_connection("school_archive.db") as conn:
+            c = conn.execute("SELECT course_name, class_level FROM courses WHERE course_code = ? AND term = ? AND year = ?;",
+                             (course_code, term, year)).fetchone()
+    name, level = ((c["course_name"] or "", c["class_level"] or "") if c else ("", ""))
+    if not subject:
+        g = lesson_topics.guess(course_code, name, level)
+        subject, grade = g["subject"], grade or g["grade"]
+    return {"status": "success", "data": {
+        "subject": subject, "grade": grade, "chapters": lesson_topics.chapters(subject, grade),
+        "suggested_groups": lesson_topics.suggest_groups(subject, grade, course_code, name, term) if c else []}}
+
+
 @app.post("/api/v1/ai/generate")
 def ai_generate_api(request: Request, spec: str = Form(...), files: List[UploadFile] = File(default=[])):
     """
     The course teacher (or an admin) asks for a draft: spec = JSON {target, course_code, term, year,
-    indicators: [{n, text}], kinds: {kind: count}, difficulty, content_text, instructions} + lesson files.
-    Only these go to Google; the answer is checked like typed questions and nothing is saved here.
+    topics: {subject, grade, chapters: [{name, topics: [sub-topic, ...]}]}, extra_topics (typed, one per line),
+    kinds: {kind: count}, difficulty, content_text, instructions} + lesson files. Chapters are checked against the
+    topic library, which also adds every chapter of that grade as context. Only these go to Google; the answer is
+    checked like typed questions and nothing is saved here.
     """
     user = current_user(request)
     if user.get("role") not in ("teacher", "admin"):
@@ -5672,16 +5706,12 @@ def ai_generate_api(request: Request, spec: str = Form(...), files: List[UploadF
     with get_connection("school_archive.db") as conn:
         c = conn.execute("SELECT course_name, class_level FROM courses WHERE course_code = ? AND term = ? AND year = ?;",
                          (code, t, y)).fetchone()
-    inds = []
-    for it in (s.get("indicators") or [])[:20]:
-        try:
-            n, text = int(it.get("n")), str(it.get("text") or "").strip()[:600]
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if text:
-            inds.append((n, text))
+    tp = s.get("topics") if isinstance(s.get("topics"), dict) else {}
+    scope = lesson_topics.resolve(str(tp.get("subject") or ""), str(tp.get("grade") or ""), tp.get("chapters"),
+                                  str(s.get("extra_topics") or "")[:4000])
     clean = {"target": s.get("target"), "course_code": code, "course_name": (c["course_name"] if c else "") or "",
-             "level": (c["class_level"] if c else "") or "", "indicators": inds, "kinds": s.get("kinds") or {},
+             "level": (c["class_level"] if c else "") or "", "topics": scope["topics"], "topic_context": scope["context"],
+             "kinds": s.get("kinds") or {},
              "difficulty": str(s.get("difficulty") or "mixed"), "content_text": str(s.get("content_text") or "")[:ai_assist.MAX_TEXT_CHARS],
              "instructions": str(s.get("instructions") or "").strip()[:1000]}
     blobs = []

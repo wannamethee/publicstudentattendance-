@@ -57,6 +57,9 @@ ngrok_domain.txt
 *.env
 auth_secret.txt
 gemini_api_key.txt
+# Academic Hub's lesson library for the AI exam helper (licensed to this school: never in git, never public)
+lesson_topics.json
+lesson_topics.json.tmp
 
 # standby (two-machine) runtime files: state, flags, logs, DB copies with personal data
 standby_config.json

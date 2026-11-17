@@ -1,6 +1,7 @@
 // ตัวช่วย AI ออกข้อสอบ: the teacher picks the job (แบบทดสอบย่อย / กลางภาค / ปลายภาค) and one of their courses, ticks the
-// ตัวชี้วัด typed for the ปพ.5, attaches or types the lesson, chooses question kinds and counts, and gets a draft with
-// the key and a worked solution for each question. Nothing is saved until they send the questions they kept:
+// chapters (เรื่อง) of the course's subject and grade from the topic library (lesson_topics.py, imported from Academic
+// Hub: the AI also gets every chapter of that grade as context), attaches or types the lesson, chooses question kinds
+// and counts, and gets a draft with the key and a worked solution for each question. Nothing is saved until they send the questions they kept:
 // a quiz is made as a draft (not shown to students) tied to a column of the scores page with "คิดเป็นกี่คะแนน";
 // midterm / final questions go after the questions already in that paper. The editor opens next for the final check.
 import 'package:file_picker/file_picker.dart';
@@ -30,8 +31,16 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   String _year = '';
   Map<String, dynamic>? _course;
   List<String> _labels = List.filled(8, '');
-  final Set<int> _picked = {};
-  final _extraInd = TextEditingController();
+  // เรื่อง from the topic library
+  String? _subject;
+  String? _grade;
+  List<Map<String, dynamic>> _chapters = [];
+  Set<String> _suggested = {};
+  final Set<String> _openGroups = {};
+  final Map<int, Set<int>> _pickedCh = {}; // chapter index -> its picked sub-topics
+  bool _topicsLoading = false;
+  final _extraTopics = TextEditingController();
+  List<String> _topicLabels = []; // the draft's "topic" numbers -> chapter names
   final _content = TextEditingController();
   final _instructions = TextEditingController();
   final List<MapEntry<String, List<int>>> _files = [];
@@ -60,7 +69,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
 
   @override
   void dispose() {
-    for (final c in [_extraInd, _content, _instructions, _title, _slotPoints]) {
+    for (final c in [_extraTopics, _content, _instructions, _title, _slotPoints]) {
       c.dispose();
     }
     super.dispose();
@@ -87,7 +96,12 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     setState(() {
       _course = c;
       _labels = List.filled(8, '');
-      _picked.clear();
+      _subject = null;
+      _grade = null;
+      _chapters = [];
+      _suggested = {};
+      _openGroups.clear();
+      _pickedCh.clear();
       _slot = null;
       _slotPoints.clear();
       _unitMax = List.filled(8, null);
@@ -95,6 +109,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     if (c == null) return;
     final code = '${c['course_code']}';
     _title.text = 'แบบทดสอบย่อย ${c['course_name'] ?? code}';
+    _loadTopics(c);
     try {
       final l = await _api.getPp5Labels(courseCode: code, term: _term, year: _year);
       final q = await _api.listQuizzes(code, _term, _year);
@@ -102,15 +117,61 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       final ind = ((l['labels'] as Map?)?['indicators'] as List? ?? []).map((e) => '${e ?? ''}'.trim()).toList();
       setState(() {
         _labels = [...ind, ...List.filled(8, '')].take(8).toList();
-        for (var i = 0; i < 8; i++) {
-          if (_labels[i].isNotEmpty) _picked.add(i);
-        }
         _unitMax = (q['unit_max'] as List? ?? List.filled(8, null));
       });
     } catch (e) {
       _snack(e.toString().replaceFirst('Exception: ', ''), error: true);
     }
   }
+
+  List<Map<String, dynamic>> get _libSubjects => ((_status?['topic_library'] as Map?)?['subjects'] as List? ?? [])
+      .map((e) => Map<String, dynamic>.from(e as Map))
+      .toList();
+
+  List<String> _gradesOf(String? sid) =>
+      (_libSubjects.firstWhere((s) => s['id'] == sid, orElse: () => <String, dynamic>{})['grades'] as List? ?? []).map((e) => '$e').toList();
+
+  List<String> get _groups {
+    final out = <String>[];
+    for (final c in _chapters) {
+      final g = '${c['group'] ?? ''}';
+      if (!out.contains(g)) out.add(g);
+    }
+    return out;
+  }
+
+  /// Chapters of [subject] / [grade]; with neither, the server guesses them from the course.
+  Future<void> _loadTopics(Map<String, dynamic> c, {String? subject, String? grade}) async {
+    if (_libSubjects.isEmpty) return;
+    setState(() => _topicsLoading = true);
+    try {
+      final d = await _api.getAiTopics(courseCode: '${c['course_code']}', term: _term, year: _year, subject: subject, grade: grade);
+      if (!mounted || _course != c) return;
+      setState(() {
+        _subject = '${d['subject'] ?? ''}'.isEmpty ? null : '${d['subject']}';
+        _grade = '${d['grade'] ?? ''}'.isEmpty ? null : '${d['grade']}';
+        _chapters = (d['chapters'] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        _suggested = (d['suggested_groups'] as List? ?? []).map((e) => '$e').toSet();
+        _pickedCh.clear();
+        _openGroups
+          ..clear()
+          ..addAll(_suggested.isEmpty ? _groups : _suggested);
+      });
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''), error: true);
+    } finally {
+      if (mounted) setState(() => _topicsLoading = false);
+    }
+  }
+
+  void _changeSubject(String? sid) {
+    if (sid == null || _course == null) return;
+    final grades = _gradesOf(sid);
+    final level = '${_course!['class_level'] ?? ''}';
+    _loadTopics(_course!, subject: sid, grade: grades.contains(level) ? level : (grades.isEmpty ? '' : grades.first));
+  }
+
+  Set<int> _allSubTopics(int i) => {for (var k = 0; k < ((_chapters[i]['topics'] as List?)?.length ?? 0); k++) k};
 
   Future<void> _addFiles() async {
     final res = await FilePicker.pickFiles(
@@ -139,13 +200,16 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     if (_course == null) return _snack('เลือกรายวิชาก่อน', error: true);
     final kinds = {for (final k in _kinds) if ((_counts[k] ?? 0) > 0) k: _counts[k]};
     if (kinds.isEmpty) return _snack('ใส่จำนวนข้ออย่างน้อย 1 ชนิด', error: true);
-    final inds = <Map<String, dynamic>>[
-      for (var i = 0; i < 8; i++)
-        if (_picked.contains(i) && _labels[i].isNotEmpty) {'n': i + 1, 'text': _labels[i]},
+    final picked = _pickedCh.keys.toList()..sort();
+    final chapters = [
+      for (final i in picked)
+        {
+          'name': _chapters[i]['name'],
+          'topics': [for (final k in (_pickedCh[i]!.toList()..sort())) (_chapters[i]['topics'] as List)[k]],
+        },
     ];
-    var n = 9;
-    for (final line in _extraInd.text.split('\n')) {
-      if (line.trim().isNotEmpty) inds.add({'n': n++, 'text': line.trim()});
+    if (chapters.isEmpty && _extraTopics.text.trim().isEmpty && _content.text.trim().isEmpty && _files.isEmpty) {
+      return _snack('เลือกเรื่องที่จะออกข้อสอบ หรือแนบ/พิมพ์เนื้อหาบทเรียนอย่างน้อย 1 อย่าง', error: true);
     }
     setState(() {
       _busy = true;
@@ -157,7 +221,8 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         'course_code': _course!['course_code'],
         'term': _term,
         'year': _year,
-        'indicators': inds,
+        'topics': {'subject': _subject ?? '', 'grade': _grade ?? '', 'chapters': chapters},
+        'extra_topics': _extraTopics.text,
         'kinds': kinds,
         'difficulty': _difficulty,
         'content_text': _content.text,
@@ -170,6 +235,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
           ..clear()
           ..addAll(List.generate(_questions.length, (i) => i));
         _notes = (d['notes'] as List? ?? []).map((e) => '$e').toList();
+        _topicLabels = (d['topics'] as List? ?? []).map((e) => '$e').toList();
         _modelNote = '${d['model_note'] ?? ''}';
         _status = {...?_status, 'left_today': d['left_today']};
       });
@@ -196,7 +262,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   }
 
   Future<void> _send() async {
-    final qs = _kept.map((q) => Map<String, dynamic>.from(q)..remove('indicator')).toList();
+    final qs = _kept.map((q) => Map<String, dynamic>.from(q)..remove('topic')).toList();
     if (qs.isEmpty) return _snack('เลือกข้อที่จะใช้อย่างน้อย 1 ข้อ', error: true);
     final c = _course!;
     setState(() => _sending = true);
@@ -266,12 +332,12 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                 _banner(Icons.key_off_rounded, Colors.orange,
                     'ผู้ดูแลระบบยังไม่ได้ใส่กุญแจ AI (Gemini API key) — ตั้งได้ที่ หน้าตั้งค่า > ตัวช่วย AI'),
               _banner(Icons.shield_outlined, Colors.indigo,
-                  'ส่งไป Google เฉพาะตัวชี้วัดและเนื้อหาที่ครูเลือกเท่านั้น ไม่ส่งชื่อหรือข้อมูลนักเรียน และไม่ส่งข้อสอบที่เก็บในระบบ • '
+                  'ส่งไป Google เฉพาะเรื่องที่เลือก รายชื่อบทเรียนของชั้นนั้น และเนื้อหาที่ครูให้ ไม่ส่งชื่อหรือข้อมูลนักเรียน และไม่ส่งข้อสอบที่เก็บในระบบ • '
                   'AI แค่ร่าง ครูต้องตรวจโจทย์ เฉลย และวิธีทำทุกข้อก่อนใช้'),
               _step(1, 'จะให้ช่วยออกอะไร', _targetPicker()),
               _step(2, 'รายวิชา', _coursePicker()),
               if (_course != null) ...[
-                _step(3, 'ตัวชี้วัดที่ต้องการวัด', _indicatorPicker()),
+                _step(3, 'เรื่องที่จะออกข้อสอบ', _topicPicker()),
                 _step(4, 'เนื้อหาที่เรียน', _contentInput()),
                 _step(5, 'ชนิดข้อสอบและจำนวนข้อ', _kindPicker()),
                 const SizedBox(height: 4),
@@ -316,7 +382,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
           const Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('ตัวช่วย AI ออกข้อสอบ', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppColors.purpleDark)),
-              Text('ร่างแบบทดสอบย่อย ข้อสอบกลางภาค ปลายภาค จากตัวชี้วัดและเนื้อหาที่เรียน พร้อมเฉลยและวิธีทำให้ครูตรวจ',
+              Text('ร่างแบบทดสอบย่อย ข้อสอบกลางภาค ปลายภาค จากเรื่องและเนื้อหาที่เรียน พร้อมเฉลยและวิธีทำให้ครูตรวจ',
                   style: TextStyle(fontSize: 13)),
             ]),
           ),
@@ -376,32 +442,158 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     );
   }
 
-  Widget _indicatorPicker() {
-    final any = _labels.any((l) => l.isNotEmpty);
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (!any)
-        Text('ยังไม่ได้พิมพ์ตัวชี้วัดของวิชานี้ในหน้า ปพ.5 (คลังข้อมูล) — พิมพ์ด้านล่างได้เลย',
-            style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
-      for (var i = 0; i < 8; i++)
-        if (_labels[i].isNotEmpty)
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            value: _picked.contains(i),
-            title: Text('ช่อง ${i + 1}: ${_labels[i]}'),
-            onChanged: (v) => setState(() => v == true ? _picked.add(i) : _picked.remove(i)),
-          ),
-      const SizedBox(height: 6),
-      TextField(
-        controller: _extraInd,
-        minLines: 1,
-        maxLines: 5,
-        decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true,
-            labelText: 'ตัวชี้วัด / จุดประสงค์เพิ่มเติม (บรรทัดละ 1 ข้อ)', hintText: 'เช่น ค 1.1 ม.2/1 เข้าใจและใช้สมบัติของเลขยกกำลัง'),
+  Widget _topicPicker() {
+    final subjects = _libSubjects;
+    final extra = TextField(
+      controller: _extraTopics,
+      minLines: 1,
+      maxLines: 4,
+      decoration: InputDecoration(
+        border: const OutlineInputBorder(),
+        isDense: true,
+        labelText: subjects.isEmpty ? 'เรื่องที่จะออกข้อสอบ (บรรทัดละ 1 เรื่อง)' : 'เรื่อง / หัวข้อเพิ่มเติมที่ไม่มีในรายการ (บรรทัดละ 1 เรื่อง)',
+        hintText: 'เช่น การแก้โจทย์ปัญหาร้อยละ',
       ),
+    );
+    if (subjects.isEmpty) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('ยังไม่มีคลังเรื่องในเครื่องนี้ — พิมพ์เรื่องที่จะออกข้อสอบได้เลย', style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
+        const SizedBox(height: 8),
+        extra,
+      ]);
+    }
+    final grades = _gradesOf(_subject);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Wrap(spacing: 10, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+        SizedBox(
+          width: 330,
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('subject-$_subject'),
+            initialValue: _subject,
+            isExpanded: true,
+            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true, labelText: 'วิชา (คลังเรื่อง)'),
+            items: [
+              for (final s in subjects) DropdownMenuItem(value: '${s['id']}', child: Text('${s['name']}', overflow: TextOverflow.ellipsis)),
+            ],
+            onChanged: _topicsLoading ? null : _changeSubject,
+          ),
+        ),
+        SizedBox(
+          width: 150,
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('grade-$_subject-$_grade'),
+            initialValue: grades.contains(_grade) ? _grade : null,
+            isExpanded: true,
+            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true, labelText: 'ชั้น'),
+            items: [for (final g in grades) DropdownMenuItem(value: g, child: Text(g))],
+            onChanged: _topicsLoading || _subject == null ? null : (g) => _loadTopics(_course!, subject: _subject, grade: g ?? ''),
+          ),
+        ),
+        if (_topicsLoading) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+      ]),
+      const SizedBox(height: 6),
+      Text(
+        _chapters.isNotEmpty
+            ? 'ติ๊กบทที่จะออกข้อสอบ แล้วกดหัวข้อย่อยเพื่อเลือกเฉพาะบางหัวข้อได้ • AI เห็นรายชื่อบทเรียนทั้งชั้นเพื่อรู้บริบท'
+            : _subject == null
+                ? 'เลือกวิชาและชั้นจากคลังเรื่อง'
+                : 'ไม่มีบทเรียนของวิชานี้ในชั้นที่เลือก',
+        style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+      ),
+      for (final g in _groups) _groupBlock(g),
+      const SizedBox(height: 10),
+      extra,
     ]);
   }
+
+  Widget _groupBlock(String g) {
+    final idx = [for (var i = 0; i < _chapters.length; i++) if ('${_chapters[i]['group'] ?? ''}' == g) i];
+    final open = g.isEmpty || _openGroups.contains(g);
+    final picked = idx.where(_pickedCh.containsKey).length;
+    final all = idx.isNotEmpty && picked == idx.length;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (g.isNotEmpty)
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => setState(() => open ? _openGroups.remove(g) : _openGroups.add(g)),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 2),
+            child: Row(children: [
+              Icon(open ? Icons.expand_more_rounded : Icons.chevron_right_rounded, color: AppColors.purpleDark),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                  Text(g, style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.purpleDark)),
+                  if (_suggested.contains(g)) _chip('ตรงกับรายวิชานี้', Colors.green),
+                  Text('${idx.length} บท${picked > 0 ? ' • เลือก $picked' : ''}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                ]),
+              ),
+              if (open)
+                TextButton(
+                  onPressed: () => setState(() {
+                    for (final i in idx) {
+                      all ? _pickedCh.remove(i) : _pickedCh.putIfAbsent(i, () => _allSubTopics(i));
+                    }
+                  }),
+                  child: Text(all ? 'ไม่เลือกทั้งหมด' : 'เลือกทั้งหมด'),
+                ),
+            ]),
+          ),
+        ),
+      if (open)
+        for (final i in idx) _chapterTile(i),
+    ]);
+  }
+
+  Widget _chapterTile(int i) {
+    final c = _chapters[i];
+    final topics = (c['topics'] as List? ?? []).map((e) => '$e').toList();
+    final sel = _pickedCh[i];
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: sel != null ? AppColors.gold : AppColors.borderSubtle),
+        color: sel != null ? AppColors.goldContainer : null,
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        CheckboxListTile(
+          dense: true,
+          controlAffinity: ListTileControlAffinity.leading,
+          value: sel != null,
+          title: Text('${i + 1}. ${c['name']}', style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: sel != null || topics.isEmpty
+              ? null
+              : Text(topics.join(' • '), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+          onChanged: (v) => setState(() => v == true ? _pickedCh[i] = _allSubTopics(i) : _pickedCh.remove(i)),
+        ),
+        if (sel != null && topics.isNotEmpty) _subTopicChips(i, topics, sel),
+      ]),
+    );
+  }
+
+  Widget _subTopicChips(int i, List<String> topics, Set<int> sel) => Padding(
+        padding: const EdgeInsets.fromLTRB(52, 0, 10, 10),
+        // a long sub-topic wraps inside its chip instead of being cut off on a phone
+        child: LayoutBuilder(
+          builder: (context, box) => Wrap(spacing: 6, runSpacing: 6, children: [
+            for (var k = 0; k < topics.length; k++)
+              FilterChip(
+                label: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: (box.maxWidth - 72).clamp(80.0, 900.0)),
+                  // chips draw their label on one line unless the text asks to wrap
+                  child: Text(topics[k], style: const TextStyle(fontSize: 12), softWrap: true, maxLines: 3, overflow: TextOverflow.ellipsis),
+                ),
+                selected: sel.contains(k),
+                visualDensity: VisualDensity.compact,
+                onSelected: (v) => setState(() {
+                  v ? sel.add(k) : sel.remove(k);
+                  if (sel.isEmpty) _pickedCh.remove(i); // no sub-topic left = the chapter is not picked
+                }),
+              ),
+          ]),
+        ),
+      );
 
   Widget _contentInput() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
@@ -489,8 +681,8 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     final q = _questions[i];
     final type = '${q['type']}';
     final names = Map<String, dynamic>.from(_status?['kinds'] as Map? ?? {});
-    final ind = q['indicator'] == null ? null : (q['indicator'] as num).toInt();
-    final indText = ind == null ? null : (ind <= 8 && ind >= 1 && _labels[ind - 1].isNotEmpty ? 'ช่อง $ind' : 'ตัวชี้วัดเพิ่มเติม');
+    final tn = (q['topic'] as num?)?.toInt();
+    final topicText = tn != null && tn >= 1 && tn <= _topicLabels.length ? _topicLabels[tn - 1] : null;
     final on = _keep.contains(i);
     final right = TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold);
     final body = <Widget>[];
@@ -540,7 +732,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                 Text('ข้อ ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold)),
                 _chip('${names[type] ?? type}', Colors.indigo),
                 _chip('${fmtPoints(_pointsOf(q))} คะแนน', Colors.teal),
-                if (indText != null) _chip(indText, Colors.purple),
+                if (topicText != null) _chip(topicText, Colors.purple),
               ]),
               const SizedBox(height: 6),
               SelectableText('${q['q']}', style: const TextStyle(fontSize: 15)),
