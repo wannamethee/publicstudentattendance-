@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../app_credits.dart';
 
 /// เครื่องที่ลงใหม่ (ฐานข้อมูลว่าง ยังไม่มีครูให้ล็อกอิน) มี 2 ทาง:
 ///  - ตั้งค่าโรงเรียนใหม่ (เริ่มใช้ครั้งแรก, ฉบับเปล่า): ชื่อโรงเรียน ที่ตั้ง สังกัด + ผู้ดูแลระบบคนแรก (รหัสครู + PIN)
@@ -224,6 +225,8 @@ class _RecoveryDialogState extends State<RecoveryDialog> {
                 child: Text('$_done\nกด "เข้าสู่ระบบ" เพื่อเริ่มใช้งาน',
                     style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold)),
               ),
+            const SizedBox(height: 14),
+            const AppCreditText(),
           ]),
         ),
       ),

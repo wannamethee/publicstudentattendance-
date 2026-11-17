@@ -51,6 +51,7 @@ SCHEMA = """
                     ready INTEGER NOT NULL DEFAULT 0,
                     mode TEXT NOT NULL DEFAULT 'quiz',       -- 'quiz' = made here, 'link' = an outside link (Google Form ...)
                     link_url TEXT,
+                    slot_points REAL,                       -- what this quiz is worth in its column (NULL = shares the rest)
                     created_by TEXT, created_at TEXT, updated_by TEXT, updated_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_quizzes_course ON quizzes(course_code, term, year);
@@ -76,7 +77,7 @@ def ensure(conn) -> None:
         if stmt:
             conn.execute(stmt)
     have = {r[1] for r in conn.execute("PRAGMA table_info(quizzes);")}
-    for col, decl in (("mode", "TEXT NOT NULL DEFAULT 'quiz'"), ("link_url", "TEXT")):
+    for col, decl in (("mode", "TEXT NOT NULL DEFAULT 'quiz'"), ("link_url", "TEXT"), ("slot_points", "REAL")):
         if col not in have:
             conn.execute(f"ALTER TABLE quizzes ADD COLUMN {col} {decl};")
 
@@ -151,6 +152,33 @@ def _check_slot(slot: Any, course_code: str, term: str, year: str, db_path: str)
     return slot
 
 
+def _check_slot_points(value: Any, slot: Optional[int], course_code: str, term: str, year: str, db_path: str,
+                       quiz_id: Optional[int]) -> Optional[float]:
+    """
+    "คิดเป็นกี่คะแนน" of one quiz in its column: None = not set (the quiz shares what the column has left).
+    The quizzes of one column together may not be worth more than its full score.
+    """
+    if value in (None, "") or slot is None:
+        return None
+    try:
+        pts = round(float(value), 1)
+    except (TypeError, ValueError):
+        raise ValueError("คะแนนที่คิดในช่องต้องเป็นตัวเลข")
+    full = float(unit_max(course_code, term, year, db_path)[slot] or 0)
+    if pts <= 0:
+        raise ValueError("คะแนนที่คิดในช่องต้องมากกว่า 0")
+    with _conn(db_path) as conn:
+        others = conn.execute(
+            "SELECT COALESCE(SUM(slot_points), 0) FROM quizzes WHERE course_code = ? AND term = ? AND year = ? "
+            "AND unit_slot = ? AND id <> ? AND COALESCE(mode, 'quiz') = 'quiz';",
+            (course_code, str(term), str(year), slot, int(quiz_id or 0))).fetchone()[0] or 0
+    if pts + float(others) > full + 1e-9:
+        left = max(0.0, full - float(others))
+        raise ValueError(f"ช่อง {slot + 1} เต็ม {_num(full)} คะแนน ชุดอื่นในช่องนี้ใช้ไปแล้ว {_num(others)} "
+                         f"ชุดนี้คิดได้ไม่เกิน {_num(left)} คะแนน")
+    return pts
+
+
 def _best(conn, quiz_ids: List[int], student_id: Optional[str] = None) -> Dict[tuple, float]:
     """(quiz_id, student_id) -> best points earned in a submitted try"""
     if not quiz_ids:
@@ -173,7 +201,7 @@ def slot_scores(course_code: str, term: str, year: str, db_path: str = DB_PATH,
     um = unit_max(course_code, term, year, db_path)
     with _conn(db_path) as conn:
         quizzes = [dict(r) for r in conn.execute(
-            "SELECT id, title, unit_slot, questions_json FROM quizzes WHERE course_code = ? AND term = ? AND year = ? "
+            "SELECT id, title, unit_slot, questions_json, slot_points FROM quizzes WHERE course_code = ? AND term = ? AND year = ? "
             "AND ready = 1 AND unit_slot IS NOT NULL AND COALESCE(mode, 'quiz') = 'quiz' ORDER BY id;", (course_code, str(term), str(year)))]
         students = [s["student_id"] for s in exams._enrolled(conn, course_code, term, year)]
         if student_id:
@@ -186,13 +214,28 @@ def slot_scores(course_code: str, term: str, year: str, db_path: str = DB_PATH,
         if not (0 <= slot < SLOTS) or not q["points"]:
             continue
         s = out.setdefault(slot, {"quizzes": [], "full": um[slot], "points_max": 0.0, "scores": {}})
-        s["quizzes"].append({"id": q["id"], "title": q["title"], "points": _num(q["points"])})
+        worth = float(q["slot_points"]) if q.get("slot_points") else None
+        s["quizzes"].append({"id": q["id"], "title": q["title"], "points": _num(q["points"]),
+                             "slot_points": _num(worth) if worth else None, "_raw": q["points"]})
         s["points_max"] += q["points"]
     for slot, s in out.items():
         full = float(s["full"] or 0)
+        # quizzes with their own "คิดเป็นกี่คะแนน" are scaled one by one; the others share what is left of the column
+        # together (raw points summed), as before. With none set this is the old rule: all of them over the full score.
+        fixed = [q for q in s["quizzes"] if q["slot_points"]]
+        shared = [q for q in s["quizzes"] if not q["slot_points"]]
+        rest = max(0.0, full - sum(float(q["slot_points"]) for q in fixed))
+        shared_max = sum(q["_raw"] for q in shared)
         for sid in students:
-            earned = sum(best.get((q["id"], sid), 0.0) for q in s["quizzes"])
-            s["scores"][sid] = _num(exams.scale_score(earned, s["points_max"], full)) if full else None
+            if not full:
+                s["scores"][sid] = None
+                continue
+            total = sum(exams.scale_score(best.get((q["id"], sid), 0.0), q["_raw"], float(q["slot_points"])) for q in fixed)
+            if shared and rest:
+                total += exams.scale_score(sum(best.get((q["id"], sid), 0.0) for q in shared), shared_max, rest)
+            s["scores"][sid] = _num(min(full, round(total, 1)))
+        for q in s["quizzes"]:
+            q.pop("_raw", None)
         s["points_max"] = _num(s["points_max"])
     return out
 
@@ -293,7 +336,8 @@ def _dict(r, with_questions: bool = False) -> Dict[str, Any]:
          "unit_slot": r["unit_slot"], "duration_min": r["duration_min"], "start_at": r["start_at"], "end_at": r["end_at"],
          "class_only": bool(r["class_only"]), "max_attempts": r["max_attempts"], "ready": bool(r["ready"]),
          "question_count": len(qs), "points": _num(_points(qs)), "updated_by": r["updated_by"], "updated_at": r["updated_at"],
-         "mode": r["mode"] or "quiz", "link_url": r["link_url"] or ""}
+         "mode": r["mode"] or "quiz", "link_url": r["link_url"] or "",
+         "slot_points": _num(r["slot_points"]) if "slot_points" in r.keys() and r["slot_points"] else None}
     if with_questions:
         d["questions"] = qs
     return d
@@ -355,6 +399,7 @@ def save_quiz(course_code: str, term: str, year: str, data: Dict[str, Any], by: 
         if ready and not qs:
             raise ValueError("ยังไม่มีข้อสอบ (ใส่อย่างน้อย 1 ข้อ หรือยกเลิก 'เปิดให้นักเรียนเห็น')")
         slot = _check_slot(data.get("unit_slot"), course_code, term, year, db_path)
+    worth = _check_slot_points(data.get("slot_points"), slot, course_code, term, year, db_path, quiz_id) if mode == "quiz" else None
     dur = data.get("duration_min")
     dur = int(dur) if dur not in (None, "", 0) else None
     if dur is not None and not (1 <= dur <= 600):
@@ -371,7 +416,7 @@ def save_quiz(course_code: str, term: str, year: str, data: Dict[str, Any], by: 
     if not 0 <= tries <= MAX_ATTEMPTS_LIMIT:
         raise ValueError(f"จำนวนครั้งที่ทำได้ 1–{MAX_ATTEMPTS_LIMIT} (0 = ไม่จำกัด)")
     vals = (title, slot, json.dumps(qs, ensure_ascii=False), dur, _fmt(s) if s else None, _fmt(e) if e else None,
-            1 if data.get("class_only") else 0, tries, 1 if ready else 0, by, _fmt(now()), mode, link)
+            1 if data.get("class_only") else 0, tries, 1 if ready else 0, by, _fmt(now()), mode, link, worth)
     with _conn(db_path) as conn:
         if quiz_id:
             old = _row(conn, quiz_id)
@@ -379,14 +424,16 @@ def save_quiz(course_code: str, term: str, year: str, data: Dict[str, Any], by: 
                 raise PermissionError("แบบทดสอบนี้ไม่ใช่ของรายวิชานี้")
             conn.execute(
                 """UPDATE quizzes SET title = ?, unit_slot = ?, questions_json = ?, duration_min = ?, start_at = ?, end_at = ?,
-                          class_only = ?, max_attempts = ?, ready = ?, updated_by = ?, updated_at = ?, mode = ?, link_url = ? WHERE id = ?;""",
+                          class_only = ?, max_attempts = ?, ready = ?, updated_by = ?, updated_at = ?, mode = ?, link_url = ?,
+                          slot_points = ? WHERE id = ?;""",
                 vals + (int(quiz_id),))
         else:
             import uuid
             cur = conn.execute(
                 """INSERT INTO quizzes (title, unit_slot, questions_json, duration_min, start_at, end_at, class_only, max_attempts,
-                                        ready, updated_by, updated_at, mode, link_url, uid, course_code, term, year, created_by, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                                        ready, updated_by, updated_at, mode, link_url, slot_points, uid, course_code, term, year,
+                                        created_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                 vals + (uuid.uuid4().hex, course_code, str(term), str(year), by, _fmt(now())))
             quiz_id = cur.lastrowid
     apply_scores(course_code, term, year, db_path)
@@ -414,7 +461,10 @@ def set_links(course_code: str, term: str, year: str, links: Dict[Any, Any], by:
                 raise PermissionError("แบบทดสอบนี้ไม่ใช่ของรายวิชานี้")
             if slot is not None and (r["mode"] or "quiz") == "link":
                 raise ValueError(f"\"{r['title']}\" เป็นลิงก์ภายนอก ระบบไม่รู้คะแนน จึงเชื่อมช่องไม่ได้ (ครูกรอกคะแนนเองในหน้าบันทึกคะแนน)")
-            conn.execute("UPDATE quizzes SET unit_slot = ?, updated_by = ?, updated_at = ? WHERE id = ?;", (slot, by, _fmt(now()), qid))
+            # moved to another column: "คิดเป็นกี่คะแนน" belonged to the old one, so it goes back to sharing the rest
+            keep = r["slot_points"] if slot is not None and slot == r["unit_slot"] else None
+            conn.execute("UPDATE quizzes SET unit_slot = ?, slot_points = ?, updated_by = ?, updated_at = ? WHERE id = ?;",
+                         (slot, keep, by, _fmt(now()), qid))
     changed = apply_scores(course_code, term, year, db_path)
     return {**list_quizzes(course_code, term, year, db_path), "changed": changed}
 

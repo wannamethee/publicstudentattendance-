@@ -3,6 +3,7 @@ import '../utils/app_theme.dart';
 import './app_3d_button.dart';
 import '../services/api_service.dart';
 import '../models/logged_in_teacher.dart';
+import '../app_credits.dart';
 
 class TeacherLoginDialog extends StatefulWidget {
   final ApiService apiService;
@@ -382,6 +383,8 @@ class _TeacherLoginDialogState extends State<TeacherLoginDialog> {
                 child: const Text('ยกเลิก'),
               ),
             ],
+            const SizedBox(height: 14),
+            const AppCreditText(),
           ],
         ),
         ),

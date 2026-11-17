@@ -11,6 +11,7 @@ import '../widgets/no_exam_right_dialog.dart';
 import '../widgets/question_kinds.dart';
 import '../widgets/student_question_card.dart';
 import '../widgets/quiz_manager.dart';
+import '../widgets/slot_points.dart';
 
 const examTypes = {'midterm': 'กลางภาค', 'final': 'ปลายภาค'};
 const choiceLetters = ['ก', 'ข', 'ค', 'ง', 'จ'];
@@ -1060,6 +1061,8 @@ class _QuestionDraft {
   final TextEditingController unit;
   final TextEditingController guide;
   final TextEditingController textAnswer; // เติมคำ: accepted words, "a / b"
+  final TextEditingController explain; // วิธีทำ / คำอธิบายเฉลย: the teacher's view only (the AI helper fills it)
+  bool showExplain = false;
   final KindDraft kind = KindDraft(); // ถูก/ผิด, จับคู่, cloze
   String? image; // a picture with the question
   bool asImage = false; // students see the picture (the question as printed) instead of the text
@@ -1067,8 +1070,9 @@ class _QuestionDraft {
   String get letterSet => labels == 'latin' ? 'abcde' : labels == 'number' ? '12345' : choiceLetters.join();
 
   _QuestionDraft(this.type, String text, List<String> cs, this.answer,
-      {String pts = '1', String num = '', String tol = '', String un = '', String gd = '', String ta = '', this.image})
+      {String pts = '1', String num = '', String tol = '', String un = '', String gd = '', String ta = '', String ex = '', this.image})
       : q = TextEditingController(text: text),
+        explain = TextEditingController(text: ex),
         textAnswer = TextEditingController(text: ta),
         choices = cs.map((c) => TextEditingController(text: c)).toList(),
         points = TextEditingController(text: pts),
@@ -1094,6 +1098,7 @@ class _QuestionDraft {
       un: '${q['unit'] ?? ''}',
       gd: '${q['guide'] ?? ''}',
       ta: type == 'text' ? (ans is List ? ans.map((e) => '$e').join(' / ') : '${ans ?? ''}') : '',
+      ex: '${q['explain'] ?? ''}',
       image: q['image'] == null || '${q['image']}'.isEmpty ? null : '${q['image']}',
     )
       ..kind.load(type, q)
@@ -1114,7 +1119,7 @@ class _QuestionDraft {
   double get pointValue => pointEach * parts;
 
   void dispose() {
-    for (final c in [q, points, numAnswer, tolerance, unit, guide, textAnswer, ...choices]) {
+    for (final c in [q, points, numAnswer, tolerance, unit, guide, textAnswer, explain, ...choices]) {
       c.dispose();
     }
     kind.dispose();
@@ -1132,6 +1137,7 @@ class _QuestionDraft {
         if (image != null) 'image': image,
         if (image != null && asImage) 'as_image': true,
         if (type == 'choice' && labels != 'thai') 'labels': labels,
+        if (explain.text.trim().isNotEmpty) 'explain': explain.text.trim(),
       };
 }
 
@@ -1179,6 +1185,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
   final _title = TextEditingController();
   final _link = TextEditingController();
   final _duration = TextEditingController();
+  final _slotPoints = TextEditingController(); // แบบทดสอบย่อย: what it is worth in its column (empty = shares the rest)
   final List<_QuestionDraft> _questions = [];
   // แบบทดสอบย่อย
   int? _slot; // 0..7 = ช่อง 1..8, null = not linked
@@ -1202,6 +1209,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
     _title.dispose();
     _link.dispose();
     _duration.dispose();
+    _slotPoints.dispose();
     for (final q in _questions) {
       q.dispose();
     }
@@ -1221,6 +1229,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
         _title.text = '${p['title'] ?? ''}';
         _duration.text = p['duration_min'] == null ? '' : '${p['duration_min']}';
         _slot = (p['unit_slot'] as num?)?.toInt();
+        _slotPoints.text = p['slot_points'] == null ? '' : _num(p['slot_points']);
         _qStart = DateTime.tryParse('${p['start_at'] ?? ''}');
         _qEnd = DateTime.tryParse('${p['end_at'] ?? ''}');
         _classOnly = p['class_only'] == true;
@@ -1526,6 +1535,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
           'id': widget.quizId,
           'title': _title.text,
           'unit_slot': _slot,
+          'slot_points': _slot == null ? null : double.tryParse(_slotPoints.text.trim()),
           'duration_min': int.tryParse(_duration.text.trim()),
           'start_at': iso(_qStart),
           'end_at': iso(_qEnd),
@@ -1796,7 +1806,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
               'ทุกแบบ (ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze) ระบบตรวจกับเฉลยเองทันทีที่นักเรียนส่ง • ชุดข้อย่อยคิดคะแนนต่อช่อง • สลับข้อและตัวเลือกให้แต่ละคน • ยังไม่กด "เปิดให้นักเรียนเห็น" = ร่าง (ไม่นับคะแนน)')
         else
           _note(Icons.calculate_outlined,
-              'ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze ระบบตรวจกับเฉลยเอง (ชุดข้อย่อยคิดคะแนนต่อช่อง ครูกดให้ถูก/ผิดรายช่องได้ในหน้า "ผลสอบ") • ข้อเขียนตอบ ถ่ายภาพส่ง ครูให้คะแนนในหน้า "ผลสอบ" • คะแนนรวมคิดตามสัดส่วนคะแนนเต็มช่อง${examTypes[widget.examType]} (ปัด 0.5) แล้วเติมให้เอง • สลับข้อให้แต่ละคน • สอบได้ครั้งเดียว'),
+              'ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze ระบบตรวจกับเฉลยเอง (ชุดข้อย่อยคิดคะแนนต่อช่อง ครูกดให้ถูก/ผิดรายช่องได้ในหน้า "ผลสอบ") • ข้อเขียนตอบ ถ่ายภาพส่ง ครูให้คะแนนในหน้า "ผลสอบ" • คะแนนรวมคิดตามสัดส่วนคะแนนเต็มช่อง${examTypes[widget.examType]} (ทศนิยม 1 ตำแหน่ง ปัดขึ้นเสมอ) แล้วเติมให้เอง • สลับข้อให้แต่ละคน • สอบได้ครั้งเดียว'),
         if (_attempts > 0)
           _note(Icons.warning_amber_rounded, 'มีนักเรียนเริ่มทำแล้ว $_attempts คน — การแก้ข้อสอบมีผลกับครั้งที่เริ่มทำหลังจากนี้เท่านั้น', color: const Color(0xFFB45309)),
         const SizedBox(height: 8),
@@ -1879,10 +1889,24 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
                   style: TextStyle(color: i < _unitMax.length && _unitMax[i] != null ? null : Colors.grey)),
             ),
         ],
-        onChanged: (v) => setState(() => _slot = v == null || v < 0 ? null : v),
+        onChanged: (v) => setState(() {
+          final next = v == null || v < 0 ? null : v;
+          if (next != _slot) _slotPoints.clear();
+          _slot = next;
+        }),
       ),
+      if (_slot != null) ...[
+        const SizedBox(height: 10),
+        SlotPointsField(
+          controller: _slotPoints,
+          slotFull: _slot! < _unitMax.length ? (_unitMax[_slot!] as num?)?.toDouble() : null,
+          rawPoints: _questions.fold<double>(0, (a, q) => a + q.pointValue),
+          onChanged: () => setState(() {}),
+        ),
+      ],
       _note(Icons.functions_rounded,
-          'หลายชุดเชื่อมช่องเดียวกันได้: รวมคะแนนดิบทุกชุด (ครั้งที่ดีที่สุดของแต่ละชุด ชุดที่ยังไม่ทำ = 0) แล้วเทียบเป็นคะแนนเต็มของช่อง ปัด 0.5 • ช่องที่ยังไม่ตั้งคะแนนเต็ม ให้ตั้งที่หน้าบันทึกคะแนนก่อน'),
+          'ตั้ง "คิดเป็นกี่คะแนน" ได้ เช่น ช่องเต็ม 10 ข้อสอบ 10 ข้อ แต่ให้คิด 5 คะแนน • หลายชุดในช่องเดียวกัน = รวมคะแนนแต่ละชุด (ห้ามเกินคะแนนเต็มช่อง) '
+          '• ชุดที่ไม่ได้ตั้งจะแบ่งคะแนนที่เหลือของช่องตามคะแนนดิบ • ทศนิยม 1 ตำแหน่ง ปัดขึ้นเสมอ • ช่องที่ยังไม่ตั้งคะแนนเต็ม ให้ตั้งที่หน้าบันทึกคะแนนก่อน'),
       const SizedBox(height: 12),
       ],
       const Text('เวลาที่นักเรียนทำได้', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -2187,6 +2211,24 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
               Text('นักเรียนเขียนตอบในกระดาษแล้วกดถ่ายภาพส่ง (ได้ถึง 5 รูป) • ครูดูรูปคู่กับเฉลยแล้วให้คะแนนในหน้า "ผลสอบ"',
                   style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
             ],
+            const SizedBox(height: 6),
+            if (q.showExplain || q.explain.text.trim().isNotEmpty)
+              TextField(
+                controller: q.explain,
+                minLines: 1,
+                maxLines: 8,
+                decoration: dec('วิธีทำ / คำอธิบายเฉลย (ครูเห็นเท่านั้น นักเรียนไม่เห็น)',
+                    hint: 'เช่น พื้นที่ = กว้าง × ยาว = 3 × 4 = 12'),
+              )
+            else
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.calculate_outlined, size: 18),
+                  label: const Text('เพิ่มวิธีทำ / คำอธิบายเฉลย'),
+                  onPressed: () => setState(() => q.showExplain = true),
+                ),
+              ),
           ],
         ),
       ),

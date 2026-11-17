@@ -2147,6 +2147,49 @@ class ApiService {
         body: {'course_code': courseCode, 'term': term, 'year': year, 'exam_type': examType, 'student_id': studentId});
   }
 
+  // ---------------------------------------------------------------- ตัวช่วย AI ออกข้อสอบ (ai_assist.py)
+
+  /// configured, model, daily_limit, used_today, left_today, kinds, quiz_kinds, levels (+ key_hint for an admin)
+  Future<Map<String, dynamic>> getAiStatus() async {
+    final r = await _examRequest('GET', '/api/v1/ai/status');
+    return Map<String, dynamic>.from(r['data']);
+  }
+
+  /// ผู้ดูแลระบบ: the key is sent once and never comes back (only its last 4 characters)
+  Future<Map<String, dynamic>> saveAiSettings({String? apiKey, String? model, int? dailyLimit, bool clearKey = false}) async {
+    final r = await _examRequest('POST', '/api/v1/ai/settings', body: {
+      if (apiKey != null) 'api_key': apiKey,
+      if (model != null) 'model': model,
+      if (dailyLimit != null) 'daily_limit': dailyLimit,
+      'clear_key': clearKey,
+    });
+    return Map<String, dynamic>.from(r['data']);
+  }
+
+  Future<String> testAi() async {
+    final r = await _examRequest('POST', '/api/v1/ai/test');
+    return '${r['message'] ?? 'พร้อมใช้งาน'}';
+  }
+
+  /// A draft from the AI: {questions, notes, files, left_today}. Only the indicators and lesson material go out.
+  Future<Map<String, dynamic>> aiGenerate(Map<String, dynamic> spec, List<MapEntry<String, List<int>>> files) async {
+    final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/v1/ai/generate'))..fields['spec'] = jsonEncode(spec);
+    for (final f in files) {
+      request.files.add(http.MultipartFile.fromBytes('files', f.value, filename: f.key));
+    }
+    final response = await http.Response.fromStream(await request.send());
+    final body = jsonDecode(utf8.decode(response.bodyBytes));
+    if (response.statusCode != 200) throw Exception(body is Map ? (body['detail'] ?? 'AI ทำงานไม่สำเร็จ') : 'AI ทำงานไม่สำเร็จ');
+    return Map<String, dynamic>.from(body['data']);
+  }
+
+  /// Checked questions go after the questions already in the midterm / final paper. Returns {data, added}.
+  Future<Map<String, dynamic>> aiAppendExam(String courseCode, String term, String year, String examType, List<Map<String, dynamic>> questions) async {
+    final r = await _examRequest('POST', '/api/v1/ai/append-exam',
+        body: {'course_code': courseCode, 'term': term, 'year': year, 'exam_type': examType, 'questions': questions});
+    return Map<String, dynamic>.from(r);
+  }
+
   // ---------------------------------------------------------------- แบบทดสอบย่อย / หลังเรียน
 
   /// ครู: a course's quizzes, plus the full score of ช่อง 1-8 (unit_max)

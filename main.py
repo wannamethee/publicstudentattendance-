@@ -1,3 +1,4 @@
+# ระบบบันทึกเวลาเรียนและ ปพ.5 - พัฒนาและออกแบบโดย วรรณเมฑี นามบุดดี (ดู app_credits.py, LICENSE)
 import os
 # openpyxl imports numpy, and numpy's OpenBLAS then starts one idle thread per CPU core and reserves memory for each
 # (measured 2026-11-11 on Windows: 19 threads / 555 MB committed, 4 threads / 69 MB with this). The server does no
@@ -14,6 +15,8 @@ import exam_timetable
 import student_photos
 import pp5_labels
 import school_profile
+import app_credits
+import ai_assist
 from urllib.parse import quote
 # CRITICAL WDAC WORKAROUND for pdfplumber parsing on Windows
 os.environ["CHARSET_NORMALIZER_USE_MYPYC"] = "0"
@@ -130,7 +133,7 @@ init_db("school_archive.db")
 
 app = FastAPI(
     title="SGS to ปพ.5 API",
-    description="Offline/Online School Grading Management System API",
+    description=f"Offline/Online School Grading Management System API - {app_credits.CREDIT_LINE} ({app_credits.COPYRIGHT})",
     version="1.0.0"
 )
 
@@ -158,6 +161,10 @@ async def require_login(request: Request, call_next):
     denied = auth.check_access(request.method, request.url.path, user)
     if denied:
         return JSONResponse(status_code=denied[0], content={"detail": denied[1]})
+    if auth.needs_school_network(request.method, request.url.path) and not auth.from_school_network(request):
+        return JSONResponse(status_code=403, content={
+            "detail": "ไฟล์สำรองทั้งระบบดาวน์โหลด อัปโหลด หรือกู้คืนได้เฉพาะจากเครื่องในเครือข่ายของโรงเรียน "
+                      "(ผ่านลิงก์ออนไลน์ไม่ได้ เพื่อกันข้อมูลนักเรียนรั่ว)"})
     return await call_next(request)
 
 
@@ -198,6 +205,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    """
+    nosniff: an uploaded file is never run as a script or page. Referrer-Policy: a link opened with ?access_token=
+    never leaks the session to another site. X-Frame-Options: no other site can frame the app to trick a click.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    return response
+
 
 @app.middleware("http")
 async def add_cache_control_headers(request, call_next):
@@ -3742,7 +3762,7 @@ class NewSchoolSetupRequest(BaseModel):
 @app.get("/api/v1/school-profile")
 def school_profile_api():
     """ชื่อโรงเรียน สังกัด ที่ตั้ง (หน้าเข้าสู่ระบบ หัวรายงาน หัวตาราง); before setup everything is empty."""
-    return {"status": "success", "data": school_profile.info()}
+    return {"status": "success", "data": school_profile.info(), "credits": app_credits.info()}
 
 
 @app.post("/api/v1/setup/new-school")
@@ -5533,6 +5553,7 @@ class SaveQuizRequest(BaseModel):
     ready: bool = False
     mode: str = "quiz"          # 'quiz' = made here, 'link' = an outside form (Google Form ...)
     link_url: Optional[str] = None
+    slot_points: Optional[float] = None   # "คิดเป็นกี่คะแนน" in its column (None = shares what the column has left)
 
 
 class QuizLinksRequest(BaseModel):
@@ -5592,6 +5613,120 @@ def save_quiz_api(payload: SaveQuizRequest, request: Request):
     except (ValueError, PermissionError, LookupError) as e:
         _exam_error(e)
     return {"status": "success", "data": data}
+
+
+# ================================================================ ตัวช่วย AI ออกข้อสอบ (ai_assist.py)
+
+@app.get("/api/v1/ai/status")
+def ai_status_api(request: Request):
+    """Is the AI set up, today's uses left for this teacher; an admin also gets the last 4 characters of the key."""
+    return {"status": "success", "data": ai_assist.status(current_user(request))}
+
+
+class AiSettingsRequest(BaseModel):
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    daily_limit: Optional[int] = None
+    clear_key: bool = False
+
+
+@app.post("/api/v1/ai/settings")
+def ai_settings_api(payload: AiSettingsRequest, request: Request):
+    """Admin only (not in auth.TEACHER_WRITE). The key is written to gemini_api_key.txt and never sent back."""
+    try:
+        ai_assist.save_settings(payload.api_key, payload.model, payload.daily_limit, payload.clear_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "data": ai_assist.status(current_user(request))}
+
+
+@app.post("/api/v1/ai/test")
+def ai_test_api(request: Request):
+    """Admin: one tiny request to check the key and the model."""
+    try:
+        msg = ai_assist.test_connection()
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"status": "success", "message": msg}
+
+
+@app.post("/api/v1/ai/generate")
+def ai_generate_api(request: Request, spec: str = Form(...), files: List[UploadFile] = File(default=[])):
+    """
+    The course teacher (or an admin) asks for a draft: spec = JSON {target, course_code, term, year,
+    indicators: [{n, text}], kinds: {kind: count}, difficulty, content_text, instructions} + lesson files.
+    Only these go to Google; the answer is checked like typed questions and nothing is saved here.
+    """
+    user = current_user(request)
+    if user.get("role") not in ("teacher", "admin"):
+        raise HTTPException(status_code=403, detail="ตัวช่วย AI สำหรับครูผู้สอน")
+    try:
+        s = json.loads(spec)
+        assert isinstance(s, dict)
+    except Exception:
+        raise HTTPException(status_code=400, detail="คำขอไม่ถูกต้อง")
+    code, t, y = str(s.get("course_code") or "").strip(), str(s.get("term") or ""), str(s.get("year") or "")
+    if not code or not t or not y:
+        raise HTTPException(status_code=400, detail="เลือกรายวิชาก่อน")
+    require_course_owner(request, code, t, y)
+    with get_connection("school_archive.db") as conn:
+        c = conn.execute("SELECT course_name, class_level FROM courses WHERE course_code = ? AND term = ? AND year = ?;",
+                         (code, t, y)).fetchone()
+    inds = []
+    for it in (s.get("indicators") or [])[:20]:
+        try:
+            n, text = int(it.get("n")), str(it.get("text") or "").strip()[:600]
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if text:
+            inds.append((n, text))
+    clean = {"target": s.get("target"), "course_code": code, "course_name": (c["course_name"] if c else "") or "",
+             "level": (c["class_level"] if c else "") or "", "indicators": inds, "kinds": s.get("kinds") or {},
+             "difficulty": str(s.get("difficulty") or "mixed"), "content_text": str(s.get("content_text") or "")[:ai_assist.MAX_TEXT_CHARS],
+             "instructions": str(s.get("instructions") or "").strip()[:1000]}
+    blobs = []
+    for f in (files or [])[:5]:
+        blobs.append((f.filename or "file", f.file.read(ai_assist.MAX_FILE_BYTES + 1)))
+    try:
+        data = ai_assist.generate(clean, blobs, user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"status": "success", "data": data}
+
+
+class AiAppendExamRequest(BaseModel):
+    course_code: str
+    term: str
+    year: str
+    exam_type: str
+    questions: List[Dict[str, Any]]
+
+
+@app.post("/api/v1/ai/append-exam")
+def ai_append_exam_api(payload: AiAppendExamRequest, request: Request):
+    """Questions the teacher checked go after the questions already in the midterm/final paper (owner's choice)."""
+    require_course_owner(request, payload.course_code, payload.term, payload.year)
+    if payload.exam_type not in exams.EXAM_TYPES:
+        raise HTTPException(status_code=400, detail="เลือกกลางภาคหรือปลายภาค")
+    ex = exams.get_exam(payload.course_code, payload.term, payload.year, payload.exam_type)
+    if ex and ex.get("attempt_count"):
+        raise HTTPException(status_code=409, detail=f"มีนักเรียนเริ่มสอบ{exams.EXAM_TYPES[payload.exam_type]}วิชานี้แล้ว จึงเพิ่มข้อไม่ได้")
+    if ex and ex.get("mode") == "link":
+        raise HTTPException(status_code=409, detail="ชุดข้อสอบนี้ตั้งเป็นลิงก์ภายนอก เปลี่ยนเป็น \"สร้างข้อสอบในระบบ\" ในหน้าข้อสอบก่อน")
+    old = (ex or {}).get("questions") or []
+    label = exams.EXAM_TYPES[payload.exam_type]
+    try:
+        data = exams.save_exam(payload.course_code, payload.term, payload.year, payload.exam_type, "quiz",
+                               (ex or {}).get("title") or f"ข้อสอบ{label} {payload.course_code}", "",
+                               (ex or {}).get("duration_min"), old + list(payload.questions), bool((ex or {}).get("ready")),
+                               current_user(request).get("name") or "")
+    except (ValueError, PermissionError) as e:
+        _exam_error(e)
+    return {"status": "success", "data": data, "added": len(data.get("questions") or []) - len(old)}
 
 
 @app.post("/api/v1/quizzes/links")

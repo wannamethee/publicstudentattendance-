@@ -6,6 +6,7 @@ import '../models/school_theme_config.dart';
 import '../utils/app_theme.dart';
 import 'app_3d_button.dart';
 import 'house_icon.dart';
+import '../app_credits.dart';
 
 /// Interactive navigation item metadata
 class SidebarDestination {
@@ -77,6 +78,11 @@ class AppSidebar extends StatelessWidget {
       icon: Icons.quiz_outlined,
       selectedIcon: Icons.quiz_rounded,
       label: 'ข้อสอบ',
+    ),
+    SidebarDestination(
+      icon: Icons.auto_awesome_outlined,
+      selectedIcon: Icons.auto_awesome_rounded,
+      label: 'ตัวช่วย AI',
     ),
     SidebarDestination(
       icon: Icons.event_note_outlined,
@@ -170,6 +176,12 @@ class AppSidebar extends StatelessWidget {
                     }
 
                     // ตั้งค่า -> ผู้อำนวยการ และ บุคคลทั่วไป ล็อกปุ่มนี้
+                    // ตัวช่วย AI ออกข้อสอบ: ครูผู้สอนเท่านั้น (เหมือนหน้าบันทึกคะแนน)
+                    if (dest.label == 'ตัวช่วย AI' && user != null && !user.canAccessScores) {
+                      isLocked = true;
+                      lockTooltip = 'ตัวช่วย AI ออกข้อสอบสำหรับครูผู้สอนเท่านั้น';
+                    }
+
                     if (dest.label == 'ตั้งค่า') {
                       if (user != null && !user.canAccessSettings) {
                         isLocked = true;
@@ -265,6 +277,8 @@ class AppSidebar extends StatelessWidget {
                         );
                       },
                     ),
+                    const SizedBox(height: 6),
+                    AppCreditText(color: Colors.white.withValues(alpha: 0.45), fontSize: 9),
                   ],
                 ),
               ),

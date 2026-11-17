@@ -39,7 +39,7 @@ FILE_DIRS = ["data", "uploads", "output"]          # always
 PP5_DIR = "outputs"                                # only with include_outputs
 SKIP_DIRS = {"pdf_page_cache", "__pycache__"}
 KEEP_DAYS = 7
-SECRETS = {"ngrok_token.txt", "auth_secret.txt", "standby_config.json"}
+SECRETS = {"ngrok_token.txt", "auth_secret.txt", "standby_config.json", "gemini_api_key.txt"}
 PROGRAM_TOP = ["ngrok_domain.txt", "*.py", "*.js", "package.json", "requirements.txt", "*.sh", "*.bat", "*.vbs", "*.md", "LICENSE",
                "template_ปพ5_blank.xlsx", "thai_glyph_labels.json", "courses_*.xlsx", "courses_*.csv", "*.example.json"]
 PROGRAM_DIRS = ["deploy", "tests", "frontend/build/web", "frontend/lib", "frontend/web", "frontend/assets"]

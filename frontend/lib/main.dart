@@ -1,3 +1,4 @@
+// ระบบบันทึกเวลาเรียนและ ปพ.5 - พัฒนาและออกแบบโดย วรรณเมฑี นามบุดดี (ดู app_credits.dart, LICENSE)
 import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'services/api_service.dart';
@@ -19,6 +20,7 @@ import 'screens/home_visit_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/exams_screen.dart';
 import 'screens/leave_screen.dart';
+import 'screens/ai_assistant_screen.dart';
 
 void main() {
   runApp(const SGSApp());
@@ -391,6 +393,7 @@ class _MainShellState extends State<MainShell> {
       TimetableScreen(apiService: _apiService),
       HomeVisitScreen(apiService: _apiService),
       ExamsScreen(apiService: _apiService),
+      AiAssistantScreen(apiService: _apiService),
       LeaveScreen(apiService: _apiService),
       SettingsScreen(apiService: _apiService),
     ];
@@ -414,7 +417,11 @@ class _MainShellState extends State<MainShell> {
                   );
                   return;
                 }
-                if (index == 8 && user != null && !user.canAccessSettings) {
+                if (index == 7 && user != null && !user.canAccessScores) {
+                  _showAccessDeniedSnackBar('ตัวช่วย AI ออกข้อสอบสำหรับครูผู้สอนเท่านั้น');
+                  return;
+                }
+                if (index == 9 && user != null && !user.canAccessSettings) {
                   _showAccessDeniedSnackBar('หน้าตั้งค่าสงวนสิทธิ์เฉพาะคณะครูและผู้ดูแลระบบเท่านั้น');
                   return;
                 }
@@ -543,7 +550,11 @@ class _MainShellState extends State<MainShell> {
                   );
                   return;
                 }
-                if (index == 8 && user != null && !user.canAccessSettings) {
+                if (index == 7 && user != null && !user.canAccessScores) {
+                  _showAccessDeniedSnackBar('ตัวช่วย AI ออกข้อสอบสำหรับครูผู้สอนเท่านั้น');
+                  return;
+                }
+                if (index == 9 && user != null && !user.canAccessSettings) {
                   _showAccessDeniedSnackBar('หน้าตั้งค่าสงวนสิทธิ์เฉพาะคณะครูและผู้ดูแลระบบเท่านั้น');
                   return;
                 }
@@ -584,6 +595,11 @@ class _MainShellState extends State<MainShell> {
                   icon: Icon(Icons.quiz_outlined),
                   selectedIcon: Icon(Icons.quiz),
                   label: 'ข้อสอบ',
+                ),
+                const NavigationDestination(
+                  icon: Icon(Icons.auto_awesome_outlined),
+                  selectedIcon: Icon(Icons.auto_awesome),
+                  label: 'ตัวช่วย AI',
                 ),
                 const NavigationDestination(
                   icon: Icon(Icons.event_note_outlined),

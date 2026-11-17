@@ -1,4 +1,9 @@
 <!DOCTYPE html>
+<!--
+  ระบบบันทึกเวลาเรียนและ ปพ.5
+  © 2569 วรรณเมฑี นามบุดดี - พัฒนาและออกแบบโดย วรรณเมฑี นามบุดดี
+  อนุญาตตาม CC BY-NC-SA 4.0: ใช้ฟรีในสถานศึกษา ห้ามนำไปขาย ต้องคงชื่อผู้พัฒนา
+-->
 <html>
 <head>
   <!--
@@ -22,7 +27,10 @@
   <meta http-equiv="Expires" content="0">
 
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="ระบบบันทึกเวลาเรียนและ ปพ.5 - พัฒนาและออกแบบโดย วรรณเมฑี นามบุดดี">
+  <meta name="author" content="วรรณเมฑี นามบุดดี">
+  <meta name="copyright" content="© 2569 วรรณเมฑี นามบุดดี">
+  <script src="app_guard.js"></script>
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -64,17 +72,8 @@
       }
     }
     window.setAppFavicon = setAppFavicon;
-
-    // Check school logo on startup to keep tab icon up to date
-    fetch('/api/v1/settings/school-logo/info')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data && data.has_logo) {
-          var ts = data.logo_updated || Date.now();
-          setAppFavicon('/api/v1/settings/school-logo?v=' + ts);
-        }
-      })
-      .catch(function() {});
+    // The tab icon itself is put in by the server (one logo URL for the tab and the app, see main.py).
+  </script>
 
   <script>
     // Unregister legacy service workers and clear caches during development/local use

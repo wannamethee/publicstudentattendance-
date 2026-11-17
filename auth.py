@@ -230,10 +230,18 @@ def clear_login_failures(*keys: str) -> None:
 
 
 def client_ip(request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else "?"
+    """
+    The address the login throttle counts by. X-Forwarded-For is trusted only when the request comes from this
+    machine (the ngrok agent), and then only its last entry, the one ngrok itself adds: anything before it was sent
+    by the client and can be changed on every try. Before this an attacker on the public link could send a new
+    made-up address with each guess and never be throttled.
+    """
+    peer = request.client.host if request.client else "?"
+    if peer in ("127.0.0.1", "::1", "localhost"):
+        fwd = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        if fwd:
+            return fwd[-1]
+    return peer
 
 
 # ---------------------------------------------------------------- request rules
@@ -301,6 +309,7 @@ TEACHER_WRITE = [
     r"/api/v1/student-photos/(stage|commit|cancel)",  # class advisor: own levels only (student_photos.py)
     r"/api/v1/settings/semesters/mark-mine",     # own view only
     r"/api/v1/leaves(/.*)?",                     # teacher leave / late arrival (endpoint check)
+    r"/api/v1/ai/(generate|append-exam)",        # ตัวช่วย AI ออกข้อสอบ: own course (endpoint check); settings = admin
 ]
 # ผู้อำนวยการ: ดูได้ทุกหน้า แต่แก้ไข อัปโหลด ดาวน์โหลดไม่ได้ และล็อกหน้าบันทึกคะแนนกับหน้าตั้งค่า
 # Reads that hand over a file to keep (templates, exports, the ปพ.5 and home-visit files).
@@ -328,6 +337,40 @@ ADMIN_GET = [
     r"/api/v1/system/admins",
     r"/api/v1/settings/public-api(/.*)?",        # การตั้งค่า API สาธารณะ + โค้ดสำหรับวาง
 ]
+# Whole-system backups hold every student's data: download, upload/restore and the off-site copy folder work only
+# from the school network, never over the public link, even for an admin (owner's decision 15 พ.ย. 2569).
+# Listing and making a backup stay open so an admin can still see that backups run.
+SCHOOL_NETWORK_ONLY = [
+    r"/api/v1/backups/archives/[^/]+/(download|restore)",
+    r"/api/v1/backups/archives/upload",
+    r"/api/v1/backups/[^/]+/download",
+    r"/api/v1/backups/restore",
+    r"/api/v1/backups/offsite",
+]
+
+
+def from_school_network(request) -> bool:
+    """
+    A device on the school's own network (or the server itself): a private address that reached the server
+    directly. Everything through the ngrok link arrives from 127.0.0.1 with X-Forwarded-For, so it is not.
+    """
+    import ipaddress
+    if any(h in request.headers for h in ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded")):
+        return False
+    peer = request.client.host if request.client else ""
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer == "localhost"
+    return ip.is_private or ip.is_loopback
+
+
+def needs_school_network(method: str, path: str) -> bool:
+    if path == "/api/v1/backups/offsite" and method in READ_METHODS:
+        return False  # seeing where the off-site copy goes is fine; changing it is not
+    return _match(SCHOOL_NETWORK_ONLY, path)
+
+
 # เลขบัตรประชาชน is admin-only: endpoints that can carry it blank it for other roles
 # (export-dmc). Keep scratch/scan_citizen_id.py passing when adding endpoints.
 

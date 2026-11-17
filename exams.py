@@ -358,6 +358,9 @@ def clean_questions(raw: Any) -> List[Dict[str, Any]]:
                         "unit": str(item.get("unit") or "").strip(), "points": points})
         else:
             out.append({"type": kind, "q": q, "guide": str(item.get("guide") or "").strip(), "points": points})
+        explain = str(item.get("explain") or "").strip()
+        if explain and len(out) > before:
+            out[-1]["explain"] = explain[:4000]   # วิธีทำ / คำอธิบายเฉลย: the teacher's view only
         if image and len(out) > before:
             out[-1]["image"] = image
             if item.get("as_image") is True:
@@ -1063,11 +1066,15 @@ def _score_max(course_code: str, term: str, year: str, exam_type: str, db_path: 
     return float(m) if m else 20.0
 
 
-def scale_score(correct: int, total: int, score_max: float) -> float:
-    """correct/total of the column's full score, to the nearest 0.5 (halves round up)."""
+def scale_score(correct: float, total: float, score_max: float) -> float:
+    """
+    correct/total of the column's full score, to 1 decimal place, always rounded up (owner's rule 17 พ.ย. 2569,
+    for quizzes and midterm/final alike): 2/3 of 5 = 3.333 -> 3.4, 7/10 of 5 = 3.5.
+    """
     if not total:
         return 0.0
-    return math.floor(correct / total * score_max * 2 + 0.5 + 1e-9) / 2
+    x = correct / total * score_max
+    return min(float(score_max), math.ceil(round(x * 10, 6)) / 10)
 
 
 def part_results(p: Dict[str, Any], given: Any) -> List[bool]:

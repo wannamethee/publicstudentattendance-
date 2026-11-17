@@ -21,6 +21,7 @@ import '../widgets/course_catalog_card.dart';
 import '../widgets/school_import_card.dart';
 import '../widgets/archive_backup_card.dart';
 import '../widgets/public_api_card.dart';
+import '../widgets/ai_settings_card.dart';
 import '../models/school_theme_config.dart';
 
 import '../widgets/app_3d_button.dart';
@@ -4104,6 +4105,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 24),
 
                 PublicApiCard(apiService: widget.apiService),
+
+                const SizedBox(height: 24),
+
+                AiSettingsCard(apiService: widget.apiService),
 
                 const SizedBox(height: 24),
 

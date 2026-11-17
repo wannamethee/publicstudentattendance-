@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.stdout.reconfigure(encoding="utf-8")
 
-TOP_LEVEL_PATTERNS = ["*.py", "*.js", "package.json", "requirements.txt", "ngrok_token.txt", "ngrok_domain.txt", "auth_secret.txt", "*.sh",
+TOP_LEVEL_PATTERNS = ["*.py", "*.js", "package.json", "requirements.txt", "ngrok_token.txt", "ngrok_domain.txt", "auth_secret.txt", "gemini_api_key.txt", "*.sh",
                       "template_*.xlsx", "*.md", "LICENSE",
                       # read at runtime: the ปพ.5 glyph table and the course-import template behind /api/v1/courses/template
                       "thai_glyph_labels.json", "courses_*.xlsx", "courses_*.csv"]

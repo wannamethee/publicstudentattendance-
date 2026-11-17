@@ -537,6 +537,11 @@ def save_workbook_atomic(wb: openpyxl.Workbook, path: Union[str, Path]) -> None:
     """
     target = Path(path)
     tmp = target.with_name(f".{target.stem}.{os.getpid()}.{threading.get_ident()}.tmp{target.suffix}")
+    try:  # the developer credit travels inside every saved file (File > Info > Properties)
+        import app_credits
+        wb.properties.description = f"{app_credits.CREDIT_LINE} ({app_credits.COPYRIGHT})"
+    except Exception:
+        pass
     with workbook_lock(target):
         wb.save(str(tmp))
         last_err: Optional[Exception] = None

@@ -10,7 +10,9 @@ String _num(dynamic v) {
   return d == d.roundToDouble() ? d.toInt().toString() : d.toStringAsFixed(d * 10 == (d * 10).roundToDouble() ? 1 : 2);
 }
 
-String quizSlotText(dynamic slot) => slot == null ? 'ไม่เชื่อมคะแนน' : 'เข้าช่อง ${(slot as num).toInt() + 1}';
+String quizSlotText(dynamic slot, [dynamic worth]) => slot == null
+    ? 'ไม่เชื่อมคะแนน'
+    : 'เข้าช่อง ${(slot as num).toInt() + 1}${worth == null ? '' : ' (คิด ${_num(worth)} คะแนน)'}';
 
 /// When students may sit it, in one line
 String quizWhenText(Map q) {
@@ -163,7 +165,7 @@ class _QuizManagerDialogState extends State<QuizManagerDialog> {
           Text(
               q['mode'] == 'link'
                   ? 'ลิงก์ภายนอก • ${q['link_url']} • ครูกรอกคะแนนเองในหน้าบันทึกคะแนน'
-                  : '${q['question_count']} ข้อ ${_num(q['points'])} คะแนน • ${quizSlotText(q['unit_slot'])} • ส่งแล้ว ${q['submitted_count']}/${q['student_count']} คน',
+                  : '${q['question_count']} ข้อ ${_num(q['points'])} คะแนน • ${quizSlotText(q['unit_slot'], q['slot_points'])} • ส่งแล้ว ${q['submitted_count']}/${q['student_count']} คน',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 12.5, color: Colors.grey.shade800)),
