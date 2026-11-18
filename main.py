@@ -4980,13 +4980,16 @@ def auth_me_api(request: Request):
     """Who the current session belongs to (used to restore the session when the app opens)."""
     u = current_user(request)
     role = u.get("role")
+    head = school_profile.is_personnel_head(u.get("code")) or u.get("is_personnel_head", False)
     return {
         "status": "success",
+        # is_personnel_head also inside "teacher": the app reads it there (LoggedInTeacher.fromJson), so the
+        # personnel head keeps the leave-page rights after a page reload
         "teacher": {"code": u.get("code"), "name": u.get("name"), "is_guest": role == "guest",
-                    "is_student": role == "student"},
+                    "is_student": role == "student", "is_personnel_head": head},
         "is_admin": role == "admin",
         "is_director": role == "director",
-        "is_personnel_head": school_profile.is_personnel_head(u.get("code")) or u.get("is_personnel_head", False),
+        "is_personnel_head": head,
         "role": "personnel_head" if school_profile.is_personnel_head(u.get("code")) else role,
     }
 
@@ -7380,6 +7383,26 @@ class LeaveCreateRequest(BaseModel):
 class LeaveStatusUpdateRequest(BaseModel):
     status: str  # 'approved', 'rejected', 'pending'
 
+import teacher_attendance  # ตารางลงเวลาครู: ส / ร (see the routes after summary-by-teacher)
+
+
+def _leave_days_vs_marks(code: str, leave_type: Optional[str], start: Optional[str], end: Optional[str],
+                         may_replace: bool) -> Optional[tuple]:
+    """Days a leave covers (ขอเข้าสาย = its first day only). If the personnel head / an admin has already put ส or ร
+    on one of them, a teacher's own request is refused (it would hide the ส); the personnel head's own leave
+    replaces those marks. Returns the (start, end) whose marks the caller clears after saving, or None."""
+    s = str(start or "").strip()[:10]
+    e = s if str(leave_type or "").strip() == "ขอเข้าสาย" else (str(end or "").strip()[:10] or s)
+    found = teacher_attendance.marks_between(code, s, e) if s else []
+    if not found:
+        return None
+    if not may_replace:
+        first = found[0]
+        what = "มาสาย (ส)" if first["status"] == "ส" else "ไปราชการ (ร)"
+        raise ValueError(f"วันที่ {first['date']} หัวหน้างานบุคคลบันทึกเป็น{what}ไว้แล้ว กรุณาติดต่อหัวหน้างานบุคคล")
+    return s, e
+
+
 @app.get("/api/v1/leaves/my")
 def get_my_leaves(request: Request):
     user = current_user(request)
@@ -7416,6 +7439,8 @@ def create_leave(request: Request, payload: LeaveCreateRequest):
                     if r and r["name"]:
                         target_name = r["name"].strip()
 
+        days = _leave_days_vs_marks(target_code, payload.leave_type, payload.start_date, payload.end_date,
+                                    may_replace=is_personnel_head or is_admin)
         record = leave_manager.create_leave_record(
             teacher_code=target_code,
             teacher_name=target_name,
@@ -7426,6 +7451,8 @@ def create_leave(request: Request, payload: LeaveCreateRequest):
             reason=payload.reason,
             contact_phone=c_phone
         )
+        if days:
+            teacher_attendance.clear_marks(target_code, *days)
         return {"status": "success", "message": "บันทึกข้อมูลเรียบร้อยแล้ว", "data": record}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -7473,7 +7500,7 @@ def update_leave_route(request: Request, leave_id: int, payload: LeaveUpdateRequ
     # Check permission: owner or หัวหน้าบุคคล (school_profile.personnel_head_code) or admin
     with database.get_connection("school_archive.db") as conn:
         conn.row_factory = sqlite3.Row
-        rec = conn.execute("SELECT teacher_code FROM teacher_leaves WHERE id = ?", (leave_id,)).fetchone()
+        rec = conn.execute("SELECT teacher_code, leave_type, start_date, end_date FROM teacher_leaves WHERE id = ?", (leave_id,)).fetchone()
         if not rec:
             raise HTTPException(status_code=404, detail="ไม่พบรายการลาที่ต้องการแก้ไข")
         rec_owner = rec["teacher_code"]
@@ -7486,6 +7513,13 @@ def update_leave_route(request: Request, leave_id: int, payload: LeaveUpdateRequ
     exp_time = payload.expected_arrival_time or payload.late_time
     c_phone = payload.contact_phone or payload.phone
 
+    try:
+        days = _leave_days_vs_marks(rec_owner, payload.leave_type or rec["leave_type"], payload.start_date or rec["start_date"],
+                                    payload.end_date or rec["end_date"], may_replace=is_privileged)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if days:
+        teacher_attendance.clear_marks(rec_owner, *days)
     updated = leave_manager.update_leave_record(
         leave_id=leave_id,
         leave_type=payload.leave_type,
@@ -7532,6 +7566,48 @@ def get_leaves_summary_by_teacher(request: Request):
         raise HTTPException(status_code=403, detail="สถิติการลาของครูทุกคนดูได้เฉพาะผู้บริหารและหัวหน้างานบุคคล")
     summary = leave_manager.get_teacher_leaves_summary()
     return {"status": "success", "data": summary}
+
+
+# ตารางลงเวลาครู (teacher_attendance.py): / มา อัตโนมัติ 06:00, ส มาสาย, ขส ขอเข้าสาย, ล ลา, ร ไปราชการ
+
+
+def _can_edit_teacher_attendance(user: Dict[str, Any]) -> bool:
+    """ลง ส / ร และลงการลาแทนครูคนอื่น: ผู้ดูแลระบบและหัวหน้างานบุคคล (ผู้อำนวยการดูได้อย่างเดียว)"""
+    return user.get("role") == "admin" or school_profile.is_personnel_head(user.get("code")) or user.get("is_personnel_head") is True
+
+
+@app.get("/api/v1/leaves/attendance-grid")
+def teacher_attendance_grid(request: Request, term: str = Query(...), year: str = Query(...)):
+    """ผู้ดูแลระบบ หัวหน้างานบุคคล ผู้อำนวยการ เห็นครูทุกคน; ครูคนอื่นเห็นเฉพาะแถวของตัวเอง"""
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบ")
+    code = (user.get("code") or "").strip()
+    see_all = _can_view_all_leaves(user)
+    data = teacher_attendance.build_grid(term, year, only_code=None if see_all else code)
+    data.update({"see_all": see_all, "can_edit": _can_edit_teacher_attendance(user), "my_code": code})
+    return {"status": "success", "data": data}
+
+
+class TeacherAttendanceMarkRequest(BaseModel):
+    term: str
+    year: str
+    teacher_code: str
+    date: str          # YYYY-MM-DD
+    status: str = ""   # 'ส', 'ร', or '' / '/' = back to มา
+
+
+@app.post("/api/v1/leaves/attendance-mark")
+def teacher_attendance_mark(request: Request, payload: TeacherAttendanceMarkRequest):
+    user = current_user(request)
+    if not _can_edit_teacher_attendance(user):
+        raise HTTPException(status_code=403, detail="ลง ส (มาสาย) และ ร (ไปราชการ) ได้เฉพาะหัวหน้างานบุคคลและผู้ดูแลระบบ")
+    try:
+        data = teacher_attendance.set_mark(payload.term, payload.year, payload.teacher_code, payload.date, payload.status,
+                                           by=(user.get("name") or user.get("code") or "").strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "data": data}
 
 @app.get("/api/v1/leaves/report-print")
 def print_leaves_report(

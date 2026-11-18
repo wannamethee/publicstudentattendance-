@@ -3364,6 +3364,25 @@ class ApiService {
     final list = body['data'] as List<dynamic>? ?? [];
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
+
+  /// ตารางลงเวลาครู: / มา อัตโนมัติ 06:00, ส มาสาย, ขส ขอเข้าสาย, ล ลา, ร ไปราชการ
+  /// (หัวหน้างานบุคคล ผู้ดูแลระบบ ผู้อำนวยการ เห็นครูทุกคน ครูคนอื่นเห็นเฉพาะแถวของตัวเอง)
+  Future<Map<String, dynamic>> getTeacherAttendanceGrid({required String term, required String year}) async {
+    final r = await _examRequest('GET', '/api/v1/leaves/attendance-grid', query: {'term': term, 'year': year});
+    return Map<String, dynamic>.from(r['data'] as Map);
+  }
+
+  /// หัวหน้างานบุคคล / ผู้ดูแลระบบ: ลง ส (มาสาย) หรือ ร (ไปราชการ) ส่ง status '' เพื่อกลับเป็น มา
+  Future<void> setTeacherAttendanceMark({
+    required String term,
+    required String year,
+    required String teacherCode,
+    required String date,
+    required String status,
+  }) async {
+    await _examRequest('POST', '/api/v1/leaves/attendance-mark',
+        body: {'term': term, 'year': year, 'teacher_code': teacherCode, 'date': date, 'status': status});
+  }
 }
 
 

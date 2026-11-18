@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../models/school_theme_config.dart';
+import '../widgets/teacher_attendance_grid.dart';
 
 class LeaveScreen extends StatefulWidget {
   final ApiService apiService;
@@ -17,52 +18,43 @@ class LeaveScreen extends StatefulWidget {
 }
 
 class _LeaveScreenState extends State<LeaveScreen> {
-  // 0: สถิติและประวัติการลาของฉัน, 1: ขอบันทึกการลา, 2: จัดการรายการลาครูทุกคน & พิมพ์รายงาน (เฉพาะหัวหน้าบุคคล หัวหน้าบุคคล)
-  int _currentView = 0; 
+  // 0: ตารางลงเวลาครู, 1: สถิติและประวัติการลาของฉัน, 2: รายการลาครูทุกคน & พิมพ์รายงาน
+  int _currentView = 0;
 
   bool _isLoading = false;
   List<Map<String, dynamic>> _myLeaves = [];
   String? _errorMessage;
 
-  // Form State
-  String _selectedLeaveType = 'ลากิจ'; // 'ลากิจ', 'ลาป่วย', 'ขอเข้าสาย'
-  DateTime _startDate = DateTime.now();
-  DateTime _endDate = DateTime.now();
-  TimeOfDay _expectedTime = const TimeOfDay(hour: 9, minute: 0);
-  final TextEditingController _reasonController = TextEditingController();
-  final TextEditingController _phoneController = TextEditingController();
-  bool _isSubmitting = false;
+  // ตารางลงเวลาครู (GET /api/v1/leaves/attendance-grid)
+  Map<String, dynamic>? _grid;
+  bool _gridLoading = false;
+  String? _gridError;
+  int? _weekRange; // null = ช่วงที่มีวันนี้, 1 = สัปดาห์ 1-10, 2 = 11-20, 0 = ทั้งหมด
 
-  // Special State for the personnel head (หัวหน้าบุคคล) & Admin
+  // รายชื่อครูสำหรับตัวกรองในหน้ารายการลา
   List<Map<String, dynamic>> _allTeachers = [];
-  String? _targetTeacherCode; // null means 'ตัวฉันเอง'
-  String? _targetTeacherName;
 
-  // View 2: All leaves management (สำหรับหัวหน้าบุคคล)
+  // View 2: รายการลาของครูทุกคน (หัวหน้างานบุคคล ผู้ดูแลระบบ ผู้อำนวยการ)
   List<Map<String, dynamic>> _allLeaves = [];
   bool _isLoadingAllLeaves = false;
   String _selectedFilterTeacherCode = 'all'; // 'all' or teacher code
   String _allLeavesSearchQuery = '';
 
+  /// ลงข้อมูลแทนครูคนอื่นได้: หัวหน้างานบุคคล / ผู้ดูแลระบบ
+  bool get _canEditOthers => widget.apiService.isPersonnelHead || widget.apiService.isAdmin;
+
+  /// เห็นครูทุกคน: หัวหน้างานบุคคล ผู้ดูแลระบบ และผู้อำนวยการ (ดูได้อย่างเดียว)
+  bool get _seeAll => _canEditOthers || widget.apiService.isDirector;
+
   @override
   void initState() {
     super.initState();
+    _loadGrid();
     _loadMyLeaves();
-
-    final isPersonnelHead = widget.apiService.isPersonnelHead ||
-                           widget.apiService.currentUser?.code == '102' ||
-                           widget.apiService.isAdmin;
-    if (isPersonnelHead) {
+    if (_seeAll) {
       _loadAllTeachers();
       _loadAllLeaves();
     }
-  }
-
-  @override
-  void dispose() {
-    _reasonController.dispose();
-    _phoneController.dispose();
-    super.dispose();
   }
 
   Future<void> _loadMyLeaves() async {
@@ -123,80 +115,6 @@ class _LeaveScreenState extends State<LeaveScreen> {
     return e.difference(s).inDays + 1;
   }
 
-  Future<void> _submitLeaveRequest() async {
-    final reason = _reasonController.text.trim();
-    if (reason.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('กรุณาระบุเหตุผลในการขอลาหรือขอเข้าสาย')),
-      );
-      return;
-    }
-
-    final startStr = DateFormat('yyyy-MM-dd').format(_startDate);
-    final endStr = DateFormat('yyyy-MM-dd').format(_endDate);
-    final timeStr = '${_expectedTime.hour.toString().padLeft(2, '0')}:${_expectedTime.minute.toString().padLeft(2, '0')}';
-
-    final isPersonnelHead = widget.apiService.isPersonnelHead ||
-                           widget.apiService.currentUser?.code == '102' ||
-                           widget.apiService.isAdmin;
-
-    final targetCode = (isPersonnelHead && _targetTeacherCode != null)
-        ? _targetTeacherCode
-        : widget.apiService.currentUser?.code;
-
-    final targetName = (isPersonnelHead && _targetTeacherName != null)
-        ? _targetTeacherName
-        : widget.apiService.currentUser?.name;
-
-    setState(() => _isSubmitting = true);
-    try {
-      await widget.apiService.createLeave(
-        leaveType: _selectedLeaveType,
-        startDate: startStr,
-        endDate: _selectedLeaveType == 'ขอเข้าสาย' ? startStr : endStr,
-        expectedArrivalTime: _selectedLeaveType == 'ขอเข้าสาย' ? timeStr : null,
-        reason: reason,
-        contactPhone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
-        teacherCode: targetCode,
-        teacherName: targetName,
-      );
-
-      _reasonController.clear();
-      _phoneController.clear();
-      if (mounted) {
-        final isSelf = _targetTeacherCode == null || _targetTeacherCode == widget.apiService.currentUser?.code;
-        setState(() {
-          _isSubmitting = false;
-          _targetTeacherCode = null;
-          _targetTeacherName = null;
-          _currentView = isSelf ? 0 : 2; // Switch to personal stats or all leaves
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isSelf
-                ? 'บันทึกคำขอ$_selectedLeaveTypeเรียบร้อยแล้ว'
-                : 'บันทึกคำขอ$_selectedLeaveTypeแทน ครู$targetName เรียบร้อยแล้ว'),
-            backgroundColor: const Color(0xFF15803D),
-          ),
-        );
-        _loadMyLeaves();
-        if (isPersonnelHead) {
-          _loadAllLeaves();
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('เกิดข้อผิดพลาด: ${e.toString().replaceFirst('Exception: ', '')}'),
-            backgroundColor: const Color(0xFFB91C1C),
-          ),
-        );
-      }
-    }
-  }
-
   Future<void> _deleteLeave(int id, String type) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -228,13 +146,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
             content: Text('ยกเลิกคำขอเรียบร้อยแล้ว'),
           ),
         );
-        _loadMyLeaves();
-        final isPersonnelHead = widget.apiService.isPersonnelHead ||
-                               widget.apiService.currentUser?.code == '102' ||
-                               widget.apiService.isAdmin;
-        if (isPersonnelHead) {
-          _loadAllLeaves();
-        }
+        _reloadAll();
       }
     } catch (e) {
       if (mounted) {
@@ -268,7 +180,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
     }
   }
 
-  Future<void> _showEditLeaveDialog(Map<String, dynamic> item) async {
+  /// ฟอร์มเดิม (ประเภท วันที่ เวลา เหตุผล เบอร์โทร) เป็นป๊อปอัพ: แก้ไขรายการ หรือ create = บันทึกใหม่จากตาราง
+  /// คืนค่า true เมื่อบันทึกสำเร็จ
+  Future<bool> _showLeaveFormDialog(Map<String, dynamic> item, {bool create = false, List<String>? types}) async {
     final leaveId = item['id'] as int? ?? 0;
     final teacherName = item['teacher_name']?.toString() ?? '';
     String editType = item['leave_type']?.toString() ?? 'ลากิจ';
@@ -285,6 +199,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
     final editReasonController = TextEditingController(text: item['reason']?.toString() ?? '');
     final editPhoneController = TextEditingController(text: item['contact_phone']?.toString() ?? item['phone']?.toString() ?? '');
     bool isSaving = false;
+    bool saved = false;
 
     await showDialog(
       context: context,
@@ -301,7 +216,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'แก้ไขรายการลาของ: ครู$teacherName',
+                      create
+                          ? '${editType == 'ขอเข้าสาย' ? 'ขอเข้าสาย' : 'บันทึกการลา'}: $teacherName'
+                          : 'แก้ไขรายการลาของ: $teacherName',
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -318,7 +235,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                       const SizedBox(height: 6),
                       Wrap(
                         spacing: 8,
-                        children: ['ลากิจ', 'ลาป่วย', 'ขอเข้าสาย'].map((type) {
+                        children: (types ?? const ['ลากิจ', 'ลาป่วย', 'ขอเข้าสาย']).map((type) {
                           final isSel = editType == type;
                           return ChoiceChip(
                             label: Text(type),
@@ -344,8 +261,8 @@ class _LeaveScreenState extends State<LeaveScreen> {
                             final picked = await showDatePicker(
                               context: context,
                               initialDate: editStartDate,
-                              firstDate: DateTime.now().subtract(const Duration(days: 90)),
-                              lastDate: DateTime.now().add(const Duration(days: 90)),
+                              firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                              lastDate: DateTime.now().add(const Duration(days: 365)),
                             );
                             if (picked != null) {
                               setDialogState(() {
@@ -398,8 +315,8 @@ class _LeaveScreenState extends State<LeaveScreen> {
                                   final picked = await showDatePicker(
                                     context: context,
                                     initialDate: editStartDate,
-                                    firstDate: DateTime.now().subtract(const Duration(days: 90)),
-                                    lastDate: DateTime.now().add(const Duration(days: 90)),
+                                    firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                                    lastDate: DateTime.now().add(const Duration(days: 365)),
                                   );
                                   if (picked != null) {
                                     setDialogState(() {
@@ -421,7 +338,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                                     context: context,
                                     initialDate: editEndDate.isBefore(editStartDate) ? editStartDate : editEndDate,
                                     firstDate: editStartDate,
-                                    lastDate: DateTime.now().add(const Duration(days: 90)),
+                                    lastDate: DateTime.now().add(const Duration(days: 365)),
                                   );
                                   if (picked != null) {
                                     setDialogState(() => editEndDate = picked);
@@ -481,25 +398,39 @@ class _LeaveScreenState extends State<LeaveScreen> {
                       final sStr = DateFormat('yyyy-MM-dd').format(editStartDate);
                       final eStr = DateFormat('yyyy-MM-dd').format(editEndDate);
 
-                      await widget.apiService.updateLeave(
-                        leaveId,
-                        leaveType: editType,
-                        startDate: sStr,
-                        endDate: editType == 'ขอเข้าสาย' ? sStr : eStr,
-                        expectedArrivalTime: editType == 'ขอเข้าสาย' ? timeStr : null,
-                        reason: editReasonController.text.trim(),
-                        contactPhone: editPhoneController.text.trim(),
-                      );
+                      if (create) {
+                        final phone = editPhoneController.text.trim();
+                        await widget.apiService.createLeave(
+                          leaveType: editType,
+                          startDate: sStr,
+                          endDate: editType == 'ขอเข้าสาย' ? sStr : eStr,
+                          expectedArrivalTime: editType == 'ขอเข้าสาย' ? timeStr : null,
+                          reason: editReasonController.text.trim(),
+                          contactPhone: phone.isEmpty ? null : phone,
+                          teacherCode: item['teacher_code']?.toString(),
+                          teacherName: item['teacher_name']?.toString(),
+                        );
+                      } else {
+                        await widget.apiService.updateLeave(
+                          leaveId,
+                          leaveType: editType,
+                          startDate: sStr,
+                          endDate: editType == 'ขอเข้าสาย' ? sStr : eStr,
+                          expectedArrivalTime: editType == 'ขอเข้าสาย' ? timeStr : null,
+                          reason: editReasonController.text.trim(),
+                          contactPhone: editPhoneController.text.trim(),
+                        );
+                      }
+                      saved = true;
                       if (mounted) {
                         Navigator.of(context).pop();
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            backgroundColor: Color(0xFF15803D),
-                            content: Text('แก้ไขข้อมูลเรียบร้อยแล้ว'),
+                          SnackBar(
+                            backgroundColor: const Color(0xFF15803D),
+                            content: Text(create ? 'บันทึก$editTypeของ $teacherName เรียบร้อยแล้ว' : 'แก้ไขข้อมูลเรียบร้อยแล้ว'),
                           ),
                         );
-                        _loadMyLeaves();
-                        _loadAllLeaves();
+                        _reloadAll();
                       }
                     } catch (e) {
                       setDialogState(() => isSaving = false);
@@ -507,7 +438,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             backgroundColor: Colors.red.shade700,
-                            content: Text('แก้ไขไม่สำเร็จ: $e'),
+                            content: Text('${create ? 'บันทึก' : 'แก้ไข'}ไม่สำเร็จ: ${e.toString().replaceFirst('Exception: ', '')}'),
                           ),
                         );
                       }
@@ -516,7 +447,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                   icon: isSaving
                       ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                       : const Icon(Icons.save_rounded, size: 16),
-                  label: const Text('บันทึกการแก้ไข'),
+                  label: Text(create ? 'บันทึก' : 'บันทึกการแก้ไข'),
                 ),
               ],
             );
@@ -524,6 +455,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
         );
       },
     );
+    return saved;
   }
 
   Color _getTypeColor(String type) {
@@ -570,9 +502,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
   @override
   Widget build(BuildContext context) {
     final user = widget.apiService.currentUser;
-    final isPersonnelHead = widget.apiService.isPersonnelHead ||
-                           user?.code == '102' ||
-                           widget.apiService.isAdmin;
+    final isPersonnelHead = _canEditOthers;
+    final isDirector = widget.apiService.isDirector && !_canEditOthers;
+    final narrow = MediaQuery.of(context).size.width < 700;
 
     return ValueListenableBuilder<SchoolThemeConfig>(
       valueListenable: widget.apiService.themeNotifier,
@@ -620,7 +552,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                           Row(
                             children: [
                               Text(
-                                'ระบบบันทึกการลา & ขอเข้าสาย',
+                                'ลงเวลาครู & บันทึกการลา',
                                 style: const TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
@@ -651,7 +583,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
                           Text(
                             isPersonnelHead
                                 ? 'ผู้ใช้งาน: ${user?.name ?? "หัวหน้าบุคคล"} (สิทธิ์หัวหน้าบุคคล: สามารถบันทึกแทนครูทุกคนและพิมพ์รายงานได้)'
-                                : 'บันทึกการลากิจ ลาป่วย และการขอเข้าสายสำหรับคณะครูและบุคลากร',
+                                : isDirector
+                                    ? 'ผู้อำนวยการ: ดูภาพรวมการมาของครูและรายบุคคลได้ (แก้ไขไม่ได้)'
+                                    : 'ตารางลงเวลา การลากิจ ลาป่วย และการขอเข้าสายของครู',
                             style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                           ),
                         ],
@@ -664,36 +598,38 @@ class _LeaveScreenState extends State<LeaveScreen> {
               // 2. PRIMARY BUTTONS TOGGLE
               Container(
                 color: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: EdgeInsets.symmetric(horizontal: narrow ? 10 : 24, vertical: 12),
                 child: Row(
                   children: [
                     Expanded(
                       child: _buildTopNavButton(
                         index: 0,
-                        icon: Icons.query_stats_rounded,
-                        label: 'สถิติวันลาของฉัน',
-                        sublabel: 'สถิติวันลาสะสมและประวัติส่วนตัว',
+                        icon: Icons.fact_check_rounded,
+                        label: 'ตารางลงเวลาครู',
+                        sublabel: _seeAll ? 'ภาพรวมการมาของครูทุกคนและรายบุคคล' : 'มา สาย ลา ของฉัน • แตะวันเพื่อขอลา/ขอเข้าสาย',
                         primaryColor: primaryColor,
                       ),
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: _buildTopNavButton(
-                        index: 1,
-                        icon: Icons.edit_calendar_rounded,
-                        label: isPersonnelHead ? 'เขียนบันทึกการลา (แทนครู)' : 'ขอบันทึกการลา / เข้าสาย',
-                        sublabel: isPersonnelHead ? 'เขียนให้ตนเอง หรือเขียนแทนครูท่านอื่น' : 'กรอกแบบฟอร์มส่งคำขอใหม่',
-                        primaryColor: primaryColor,
+                    if (!isDirector) ...[
+                      SizedBox(width: narrow ? 8 : 14),
+                      Expanded(
+                        child: _buildTopNavButton(
+                          index: 1,
+                          icon: Icons.query_stats_rounded,
+                          label: 'สถิติวันลาของฉัน',
+                          sublabel: 'สถิติวันลาสะสมและประวัติส่วนตัว',
+                          primaryColor: primaryColor,
+                        ),
                       ),
-                    ),
-                    if (isPersonnelHead) ...[
-                      const SizedBox(width: 14),
+                    ],
+                    if (_seeAll) ...[
+                      SizedBox(width: narrow ? 8 : 14),
                       Expanded(
                         child: _buildTopNavButton(
                           index: 2,
                           icon: Icons.manage_accounts_rounded,
-                          label: 'จัดการรายการลา & พิมพ์รายงาน',
-                          sublabel: 'แก้ไขคำขอลาแทนครู และพิมพ์รายงานสรุป',
+                          label: isPersonnelHead ? 'จัดการรายการลา & พิมพ์รายงาน' : 'รายการลา & พิมพ์รายงาน',
+                          sublabel: isPersonnelHead ? 'แก้ไขคำขอลาแทนครู และพิมพ์รายงานสรุป' : 'ดูรายการลาของครูทุกคน และพิมพ์รายงาน',
                           primaryColor: const Color(0xFF15803D),
                         ),
                       ),
@@ -705,7 +641,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
 
               // 3. MAIN BODY
               Expanded(
-                child: _isLoading
+                child: _currentView == 0
+                    ? _buildAttendanceGridView(primaryColor)
+                    : _isLoading
                     ? const Center(child: CircularProgressIndicator())
                     : _errorMessage != null
                         ? Center(
@@ -723,16 +661,569 @@ class _LeaveScreenState extends State<LeaveScreen> {
                               ),
                             ),
                           )
-                        : _currentView == 0
+                        : _currentView == 1
                             ? _buildStatsAndHistoryView(primaryColor)
-                            : _currentView == 1
-                                ? _buildRequestFormView(primaryColor, isPersonnelHead)
-                                : _buildPersonnelHeadManagementView(primaryColor),
+                            : _buildPersonnelHeadManagementView(primaryColor),
               ),
             ],
           ),
         );
       },
+    );
+  }
+
+  // -------------------------------------------------------------
+  // VIEW 0: ตารางลงเวลาครู (/ มา อัตโนมัติ 06:00, ส, ขส, ล, ร)
+  // -------------------------------------------------------------
+  Future<void> _loadGrid() async {
+    setState(() {
+      _gridLoading = true;
+      _gridError = null;
+    });
+    try {
+      var sem = widget.apiService.defaultSemesterNotifier.value;
+      if (sem == null) {
+        await widget.apiService.getSemesterConfigs();
+        sem = widget.apiService.defaultSemesterNotifier.value;
+      }
+      if (sem == null) throw Exception('ยังไม่ได้ตั้งค่าภาคเรียน');
+      final data = await widget.apiService.getTeacherAttendanceGrid(term: sem.term, year: sem.year);
+      if (mounted) {
+        setState(() {
+          _grid = data;
+          _gridLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _gridError = e.toString().replaceFirst('Exception: ', '');
+          _gridLoading = false;
+        });
+      }
+    }
+  }
+
+  /// หลังบันทึก / แก้ไข / ลบ: โหลดทุกส่วนที่ใช้ข้อมูลการลาใหม่
+  void _reloadAll() {
+    _loadMyLeaves();
+    if (_seeAll) _loadAllLeaves();
+    _loadGrid();
+  }
+
+  void _toast(String text, {bool ok = true}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(text),
+      backgroundColor: ok ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+    ));
+  }
+
+  Future<void> _setMark(Map<String, dynamic> row, String date, String status) async {
+    final g = _grid;
+    if (g == null) return;
+    try {
+      await widget.apiService.setTeacherAttendanceMark(
+        term: g['term'].toString(),
+        year: g['year'].toString(),
+        teacherCode: row['teacher_code'].toString(),
+        date: date,
+        status: status,
+      );
+      _toast(status.isEmpty
+          ? 'บันทึก ${row['teacher_name']} วันที่ ${thaiShortDate(date)} เป็น มา แล้ว'
+          : 'บันทึก ${row['teacher_name']} วันที่ ${thaiShortDate(date)} เป็น ${TeacherMark.label[status]} ($status) แล้ว');
+      await _loadGrid();
+    } catch (e) {
+      _toast('บันทึกไม่สำเร็จ: ${e.toString().replaceFirst('Exception: ', '')}', ok: false);
+    }
+  }
+
+  /// รายการลาเต็ม (มีเหตุผล เบอร์โทร) จากรายการที่โหลดไว้; ไม่เจอให้โหลดใหม่หนึ่งครั้ง
+  Future<Map<String, dynamic>?> _leaveFull(dynamic id) async {
+    Map<String, dynamic>? find() {
+      for (final l in [..._allLeaves, ..._myLeaves]) {
+        if (l['id'] == id) return l;
+      }
+      return null;
+    }
+
+    final hit = find();
+    if (hit != null) return hit;
+    await _loadMyLeaves();
+    if (_seeAll) await _loadAllLeaves();
+    return find();
+  }
+
+  /// เปิดฟอร์มเดิม (ป๊อปอัพ) เพื่อบันทึก ขส หรือ ล ของครูในแถวนั้น เริ่มที่วันที่แตะ
+  Future<void> _requestFromGrid(Map<String, dynamic> row, String date, String symbol) async {
+    await _showLeaveFormDialog({
+      'teacher_code': row['teacher_code'],
+      'teacher_name': row['teacher_name'],
+      'leave_type': symbol == 'ขส' ? 'ขอเข้าสาย' : 'ลากิจ',
+      'start_date': date,
+      'end_date': date,
+    }, create: true, types: symbol == 'ขส' ? const ['ขอเข้าสาย'] : const ['ลากิจ', 'ลาป่วย']);
+  }
+
+  Future<void> _editFromGrid(dynamic leaveId) async {
+    final full = await _leaveFull(leaveId);
+    if (full == null) {
+      _toast('ไม่พบรายการลานี้ กรุณารีเฟรช', ok: false);
+      return;
+    }
+    await _showLeaveFormDialog(full);
+  }
+
+  Future<void> _onGridCellTap(Map<String, dynamic> row, int slot) async {
+    final g = _grid;
+    if (g == null) return;
+    final dates = (g['dates'] as List).map((e) => e.toString()).toList();
+    final date = dates[slot];
+    final isFuture = date.compareTo(g['today']?.toString() ?? '') > 0;
+    final status = ((row['status_list'] as List)[slot] ?? '').toString();
+    final infoRaw = (row['info'] as List)[slot];
+    final info = infoRaw is Map ? Map<String, dynamic>.from(infoRaw) : null;
+    final canEdit = g['can_edit'] == true;
+    final isMine = row['teacher_code'].toString() == (g['my_code'] ?? '').toString();
+    final full = info == null ? null : await _leaveFull(info['leave_id']);
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetCtx) {
+        void run(VoidCallback action) {
+          Navigator.of(sheetCtx).pop();
+          action();
+        }
+
+        Widget option(String sym, String title, String subtitle, VoidCallback? onTap) {
+          final current = status == sym;
+          return ListTile(
+            enabled: onTap != null || current,
+            leading: CircleAvatar(
+              radius: 18,
+              backgroundColor: sym == '/' ? const Color(0xFFDCFCE7) : TeacherMark.fill(sym),
+              child: Text(sym,
+                  style: TextStyle(fontWeight: FontWeight.bold, color: TeacherMark.color(sym), fontSize: sym.length > 1 ? 13 : 16)),
+            ),
+            title: Text(title, style: TextStyle(fontWeight: current ? FontWeight.bold : FontWeight.w600)),
+            subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+            trailing: current ? Icon(Icons.check_circle_rounded, color: TeacherMark.color(sym)) : null,
+            onTap: onTap == null ? null : () => run(onTap),
+          );
+        }
+
+        Widget note(String text, {Color color = const Color(0xFF475569)}) => Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: Text(text, style: TextStyle(fontSize: 13, color: color)),
+            );
+
+        final children = <Widget>[];
+        if (info != null) {
+          final type = info['leave_type']?.toString() ?? '';
+          final start = info['start_date']?.toString() ?? date;
+          final end = info['end_date']?.toString() ?? start;
+          final time = info['time']?.toString() ?? '';
+          final reason = (full?['reason'] ?? '').toString();
+          final phone = (full?['contact_phone'] ?? full?['phone'] ?? '').toString();
+          final approval = info['approval']?.toString() ?? 'pending';
+          children.add(Container(
+            margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: TeacherMark.fill(status),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: TeacherMark.color(status).withValues(alpha: 0.35)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Text(type, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: TeacherMark.color(status))),
+                  const SizedBox(width: 8),
+                  _buildStatusBadge(approval),
+                ]),
+                const SizedBox(height: 6),
+                Text(start == end ? 'วันที่ ${thaiShortDate(start)}' : 'วันที่ ${thaiShortDate(start)} ถึง ${thaiShortDate(end)}',
+                    style: const TextStyle(fontSize: 13)),
+                if (time.isNotEmpty) Text('เวลาที่คาดว่าจะมาถึง $time น.', style: const TextStyle(fontSize: 13)),
+                if (reason.isNotEmpty) Text('เหตุผล: $reason', style: const TextStyle(fontSize: 13)),
+                if (phone.isNotEmpty) Text('เบอร์ติดต่อ: $phone', style: const TextStyle(fontSize: 13)),
+              ],
+            ),
+          ));
+          if (canEdit || isMine) {
+            children.add(Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Wrap(spacing: 10, runSpacing: 8, children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.edit_note_rounded, size: 18),
+                  label: const Text('แก้ไขรายการนี้'),
+                  onPressed: () => run(() => _editFromGrid(info['leave_id'])),
+                ),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFB91C1C)),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                  label: Text(canEdit ? 'ลบรายการนี้' : 'ยกเลิกคำขอ'),
+                  onPressed: () => run(() => _deleteLeave(info['leave_id'] as int, type)),
+                ),
+              ]),
+            ));
+            if (start != end) children.add(note('รายการนี้ครอบคลุมหลายวัน การลบจะลบทั้งรายการ ถ้าจะเปลี่ยนบางวันให้กด "แก้ไขรายการนี้" แล้วเลื่อนวันที่'));
+          }
+        } else if (canEdit) {
+          children.addAll([
+            option('/', 'มา', 'มาตรงเวลา (ระบบลงให้อัตโนมัติทุกวันเรียนตั้งแต่ ${g['day_starts'] ?? '06:00'} น.)',
+                status == 'ส' || status == 'ร' ? () => _setMark(row, date, '') : null),
+            option('ส', 'มาสาย', isFuture ? 'ลงได้เฉพาะวันนี้หรือวันที่ผ่านมาแล้ว' : 'มาไม่ทันลงเวลา (ไม่ต้องกรอกรายละเอียด)',
+                isFuture || status == 'ส' ? null : () => _setMark(row, date, 'ส')),
+            option('ขส', 'ขอเข้าสาย', 'กรอกเวลาที่จะมาถึงและเหตุผล (ฟอร์มเดิม)', () => _requestFromGrid(row, date, 'ขส')),
+            option('ล', 'ลา (ลากิจ / ลาป่วย)', 'กรอกช่วงวันที่ลาและเหตุผล (ฟอร์มเดิม)', () => _requestFromGrid(row, date, 'ล')),
+            option('ร', 'ไปราชการ', 'ไม่ต้องกรอกรายละเอียด', status == 'ร' ? null : () => _setMark(row, date, 'ร')),
+          ]);
+        } else if (isMine) {
+          if (status == 'ส' || status == 'ร') {
+            children.add(note('หัวหน้างานบุคคลบันทึกวันนี้เป็น ${TeacherMark.label[status]} ($status) หากไม่ถูกต้องกรุณาติดต่อหัวหน้างานบุคคล'));
+          } else {
+            children.addAll([
+              option('ขส', 'ขอเข้าสาย', 'กรอกเวลาที่จะมาถึงและเหตุผล', () => _requestFromGrid(row, date, 'ขส')),
+              option('ล', 'ลา (ลากิจ / ลาป่วย)', 'กรอกช่วงวันที่ลาและเหตุผล', () => _requestFromGrid(row, date, 'ล')),
+            ]);
+          }
+        } else {
+          children.add(note(status.isEmpty ? 'ยังไม่ถึงวันนี้' : 'สถานะ: ${TeacherMark.label[status] ?? status} (ดูได้อย่างเดียว)'));
+        }
+
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('${row['teacher_name']}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Text('วัน${dayFullThai[slot % 5]}ที่ ${thaiShortDate(date)}${isFuture ? ' (ล่วงหน้า)' : ''}',
+                            style: const TextStyle(fontSize: 13, color: Color(0xFF64748B))),
+                      ]),
+                    ),
+                    if (status.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: status == '/' ? const Color(0xFFDCFCE7) : TeacherMark.fill(status),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text('$status ${TeacherMark.label[status] ?? ''}',
+                            style: TextStyle(fontWeight: FontWeight.bold, color: TeacherMark.color(status))),
+                      ),
+                  ]),
+                ),
+                const Divider(height: 1),
+                const SizedBox(height: 6),
+                ...children,
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// สรุปของครูหนึ่งคน: มา (รวม ส ขส ร) • ส • ขส • ล • ร  นับเฉพาะวันเรียนที่ผ่านมาแล้ว
+  Widget _summaryChips(Map<String, dynamic> s) {
+    Widget chip(String label, String value, Color color, {String? sub}) => Container(
+          constraints: const BoxConstraints(minWidth: 120),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border(left: BorderSide(color: color, width: 4), top: const BorderSide(color: Color(0xFFE2E8F0)),
+                right: const BorderSide(color: Color(0xFFE2E8F0)), bottom: const BorderSide(color: Color(0xFFE2E8F0))),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+            Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
+            if (sub != null) Text(sub, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+          ]),
+        );
+    int n(String k) => (s[k] as num?)?.toInt() ?? 0;
+    return Wrap(spacing: 10, runSpacing: 10, children: [
+      chip('วันเรียนถึงวันนี้', '${n('school_days')} วัน', const Color(0xFF94A3B8)),
+      chip('มา (/)', '${n('present')} วัน', TeacherMark.color('/'), sub: 'ตรงเวลา ${n('on_time')} วัน'),
+      chip('มาสาย (ส)', '${n('late')} วัน', TeacherMark.color('ส')),
+      chip('ขอเข้าสาย (ขส)', '${n('late_request')} ครั้ง', TeacherMark.color('ขส')),
+      chip('ลา (ล)', '${n('leave')} วัน', TeacherMark.color('ล'), sub: 'ลากิจ ${n('leave_kij')} • ลาป่วย ${n('leave_puay')}'),
+      chip('ไปราชการ (ร)', '${n('official')} วัน', TeacherMark.color('ร')),
+    ]);
+  }
+
+  /// รายบุคคล: สรุป + ทุกวันที่ไม่ใช่ "มา" ตามปกติ (ผู้อำนวยการ หัวหน้างานบุคคล ผู้ดูแลระบบ หรือครูดูของตัวเอง)
+  Future<void> _showTeacherDetail(Map<String, dynamic> row) async {
+    final g = _grid;
+    if (g == null) return;
+    final dates = (g['dates'] as List).map((e) => e.toString()).toList();
+    final status = (row['status_list'] as List).map((e) => (e ?? '').toString()).toList();
+    final info = row['info'] as List;
+    final today = g['today']?.toString() ?? '';
+    final code = row['teacher_code'].toString();
+    if (_seeAll && _allLeaves.isEmpty) await _loadAllLeaves();
+    if (!mounted) return;
+    final events = <Widget>[];
+    for (var i = 0; i < dates.length && i < status.length; i++) {
+      final st = status[i];
+      if (st.isEmpty || st == '/') continue;
+      final inf = info[i] is Map ? Map<String, dynamic>.from(info[i] as Map) : null;
+      Map<String, dynamic>? full;
+      for (final l in [..._allLeaves, ..._myLeaves]) {
+        if (inf != null && l['id'] == inf['leave_id']) full = l;
+      }
+      final parts = <String>[
+        if (inf != null) inf['leave_type'].toString() else TeacherMark.label[st] ?? st,
+        if (inf != null && (inf['time'] ?? '').toString().isNotEmpty) 'ถึง ${inf['time']} น.',
+        if ((full?['reason'] ?? '').toString().isNotEmpty) full!['reason'].toString(),
+      ];
+      events.add(ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading: CircleAvatar(
+          radius: 15,
+          backgroundColor: TeacherMark.fill(st),
+          child: Text(st, style: TextStyle(fontSize: st.length > 1 ? 11 : 14, fontWeight: FontWeight.bold, color: TeacherMark.color(st))),
+        ),
+        title: Text('วัน${dayFullThai[i % 5]}ที่ ${thaiShortDate(dates[i])}${dates[i].compareTo(today) > 0 ? ' (ล่วงหน้า)' : ''}',
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text(parts.join(' • ')),
+      ));
+    }
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('${row['teacher_name']}', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: 640,
+          child: SingleChildScrollView(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              Text('ภาคเรียนที่ ${g['term']}/${g['year']} • รหัสครู $code',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF64748B))),
+              const SizedBox(height: 12),
+              _summaryChips(Map<String, dynamic>.from((row['summary'] as Map?) ?? const {})),
+              const SizedBox(height: 16),
+              const Text('วันที่ไม่ได้มาตรงเวลาตามปกติ', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              if (events.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('มาตรงเวลาทุกวัน', style: TextStyle(color: Color(0xFF15803D))),
+                )
+              else
+                ...events,
+            ]),
+          ),
+        ),
+        actions: [
+          if (_seeAll)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _selectedFilterTeacherCode = _allTeachers.any((t) => t['teacher_code'] == code) ? code : 'all';
+                  _currentView = 2;
+                });
+              },
+              child: const Text('ดูรายการลาทั้งหมดของครูคนนี้'),
+            ),
+          FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('ปิด')),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAttendanceGridView(Color primaryColor) {
+    final narrow = MediaQuery.of(context).size.width < 600;
+    if (_grid == null) {
+      if (_gridError != null) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.error_outline_rounded, size: 48, color: Colors.red.shade400),
+              const SizedBox(height: 12),
+              Text(_gridError!, style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton(onPressed: _loadGrid, child: const Text('ลองใหม่')),
+            ]),
+          ),
+        );
+      }
+      return const Center(child: CircularProgressIndicator());
+    }
+    final g = _grid!;
+    final rows = ((g['teachers'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final seeAll = g['see_all'] == true;
+    final canEdit = g['can_edit'] == true;
+    final todaySlot = g['today_slot'] as int?;
+    final holidays = ((g['holidays'] as List?) ?? const []).map((e) => e as int).toSet();
+    final range = _weekRange ?? (todaySlot != null && todaySlot >= 50 ? 2 : 1);
+    final from = range == 2 ? 10 : 0;
+    final to = range == 1 ? 9 : 19;
+
+    // ภาพรวมวันนี้ (ผู้ที่เห็นครูทุกคน)
+    final todayCounts = <String, int>{for (final s in TeacherMark.order) s: 0};
+    final isSchoolDay = todaySlot != null && !holidays.contains(todaySlot);
+    if (isSchoolDay) {
+      for (final r in rows) {
+        final st = ((r['status_list'] as List)[todaySlot] ?? '').toString();
+        if (todayCounts.containsKey(st)) todayCounts[st] = todayCounts[st]! + 1;
+      }
+    }
+    final hint = canEdit
+        ? 'แตะช่องวันเพื่อเปลี่ยนเป็น ส ขส ล หรือ ร • แตะชื่อครูเพื่อดูรายบุคคล'
+        : seeAll
+            ? 'ผู้อำนวยการดูได้อย่างเดียว • แตะชื่อครูเพื่อดูรายบุคคล แตะช่องวันเพื่อดูรายละเอียด'
+            : 'แตะช่องวันเพื่อขอเข้าสาย (ขส) หรือลา (ล) • ส และ ร หัวหน้างานบุคคลเป็นผู้ลง';
+
+    Widget legend(String sym, String text) => Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 26,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: sym == '/' ? Colors.white : TeacherMark.fill(sym),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(sym, style: TextStyle(fontSize: sym.length > 1 ? 10.5 : 13, fontWeight: FontWeight.bold, color: TeacherMark.color(sym))),
+          ),
+          const SizedBox(width: 5),
+          Text(text, style: const TextStyle(fontSize: 12.5)),
+        ]);
+    Widget swatch(Color c, String text) => Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 26,
+            height: 22,
+            decoration: BoxDecoration(color: c, border: Border.all(color: const Color(0xFFCBD5E1)), borderRadius: BorderRadius.circular(4)),
+          ),
+          const SizedBox(width: 5),
+          Text(text, style: const TextStyle(fontSize: 12.5)),
+        ]);
+
+    return RefreshIndicator(
+      onRefresh: _loadGrid,
+      child: ListView(
+        padding: EdgeInsets.all(narrow ? 12 : 24),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(Icons.fact_check_rounded, color: primaryColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('ตารางลงเวลาครู ภาคเรียนที่ ${g['term']}/${g['year']}',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+                ),
+                IconButton(
+                  tooltip: 'โหลดใหม่',
+                  onPressed: _gridLoading ? null : _loadGrid,
+                  icon: _gridLoading
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.refresh_rounded),
+                ),
+              ]),
+              Text(
+                'ทุกวันเรียน ระบบลง / (มา) ให้ครูทุกคนอัตโนมัติเวลา ${g['day_starts'] ?? '06:00'} น. ตามนาฬิกาเครื่องเซิร์ฟเวอร์ '
+                '• วันหยุดใช้ปฏิทินเดียวกับตารางเช็คชื่อนักเรียน',
+                style: const TextStyle(fontSize: 12.5, color: Color(0xFF475569)),
+              ),
+              const SizedBox(height: 4),
+              Text(hint, style: TextStyle(fontSize: 12.5, color: primaryColor, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+              Wrap(spacing: 14, runSpacing: 8, children: [
+                for (final s in TeacherMark.order) legend(s, TeacherMark.label[s]!),
+                swatch(const Color(0xFFE2E8F0), 'วันหยุด'),
+                swatch(const Color(0xFFFDE68A), 'วันนี้'),
+              ]),
+            ]),
+          ),
+          const SizedBox(height: 14),
+          if (seeAll && isSchoolDay) ...[
+            Text(
+              g['day_started'] == true
+                  ? 'วันนี้ (${thaiShortDate(g['today'].toString())}) ครูทั้งหมด ${rows.length} คน'
+                  : 'วันนี้ (${thaiShortDate(g['today'].toString())}) ระบบจะลง / ให้ครูทุกคนเวลา ${g['day_starts'] ?? '06:00'} น.',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+            ),
+            const SizedBox(height: 8),
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              for (final s in TeacherMark.order)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: s == '/' ? const Color(0xFFF0FDF4) : TeacherMark.fill(s),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: TeacherMark.color(s).withValues(alpha: 0.3)),
+                  ),
+                  child: Text('${TeacherMark.label[s]} ${todayCounts[s]} คน',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: TeacherMark.color(s))),
+                ),
+            ]),
+            const SizedBox(height: 14),
+          ],
+          if (!seeAll && rows.isNotEmpty) ...[
+            const Text('สรุปของฉัน (นับถึงวันนี้)', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155))),
+            const SizedBox(height: 8),
+            _summaryChips(Map<String, dynamic>.from((rows.first['summary'] as Map?) ?? const {})),
+            const SizedBox(height: 14),
+          ],
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 1, label: Text('สัปดาห์ 1–10')),
+                ButtonSegment(value: 2, label: Text('สัปดาห์ 11–20')),
+                ButtonSegment(value: 0, label: Text('ทั้งหมด 20 สัปดาห์')),
+              ],
+              selected: {range},
+              showSelectedIcon: false,
+              onSelectionChanged: (v) => setState(() => _weekRange = v.first),
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (rows.isEmpty)
+            _buildEmptyCard('ไม่พบชื่อของท่านในรายชื่อครูของระบบ')
+          else
+            TeacherAttendanceGrid(
+              data: g,
+              weekFrom: from,
+              weekTo: to,
+              onCellTap: _onGridCellTap,
+              onNameTap: _showTeacherDetail,
+            ),
+          if (seeAll && rows.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            const Text('สรุปรายบุคคล (นับเฉพาะวันเรียนที่ผ่านมาแล้ว • มา รวม ส ขส ร)',
+                style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155))),
+            const SizedBox(height: 8),
+            TeacherAttendanceSummaryTable(rows: rows, onNameTap: _showTeacherDetail),
+          ],
+          const SizedBox(height: 24),
+        ],
+      ),
     );
   }
 
@@ -744,6 +1235,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
     required Color primaryColor,
   }) {
     final isSelected = _currentView == index;
+    final narrow = MediaQuery.of(context).size.width < 700;
 
     return InkWell(
       borderRadius: BorderRadius.circular(12),
@@ -786,7 +1278,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                       color: isSelected ? primaryColor : const Color(0xFF1E293B),
                     ),
                   ),
-                  Text(
+                  if (!narrow) Text(
                     sublabel,
                     style: TextStyle(
                       fontSize: 11,
@@ -890,8 +1382,8 @@ class _LeaveScreenState extends State<LeaveScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
               icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('ขอบันทึกการลาใหม่'),
-              onPressed: () => setState(() => _currentView = 1),
+              label: const Text('ขอลา / ขอเข้าสาย (แตะวันในตาราง)'),
+              onPressed: () => setState(() => _currentView = 0),
             ),
           ],
         ),
@@ -1128,399 +1620,6 @@ class _LeaveScreenState extends State<LeaveScreen> {
   }
 
   // -------------------------------------------------------------
-  // VIEW 2: ขอบันทึกการลา / ขอเข้าสาย (FORM)
-  // -------------------------------------------------------------
-  Widget _buildRequestFormView(Color primaryColor, bool isPersonnelHead) {
-    final daysPreview = _calculateDays(_startDate, _endDate);
-
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.02),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.post_add_rounded, color: primaryColor, size: 24),
-                  const SizedBox(width: 10),
-                  Text(
-                    isPersonnelHead ? 'แบบฟอร์มบันทึกการลา (สามารถเลือกบันทึกแทนครูได้ทุกคน)' : 'แบบฟอร์มขอบันทึกการลา / ขอเข้าสาย',
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              const Divider(height: 24),
-
-              // 0. TEACHER SELECTOR FOR PERSONNEL HEAD (สิทธิ์หัวหน้าบุคคล)
-              if (isPersonnelHead) ...[
-                _buildTeacherSelectorForPersonnelHead(primaryColor),
-              ],
-
-              // 1. CHOOSE TYPE
-              const Text('1. ประเภทการลา:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  _buildTypeChoiceChip('ลากิจ', Icons.business_center_rounded),
-                  const SizedBox(width: 12),
-                  _buildTypeChoiceChip('ลาป่วย', Icons.healing_rounded),
-                  const SizedBox(width: 12),
-                  _buildTypeChoiceChip('ขอเข้าสาย', Icons.access_time_filled_rounded),
-                ],
-              ),
-              const SizedBox(height: 20),
-
-              // 2. DATES / TIME
-              if (_selectedLeaveType == 'ขอเข้าสาย') ...[
-                const Text('2. วันที่และเวลาที่คาดว่าจะมาถึง:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                          alignment: Alignment.centerLeft,
-                        ),
-                        icon: const Icon(Icons.calendar_today_rounded, size: 18),
-                        label: Text('วันที่: ${_formatThaiDate(DateFormat('yyyy-MM-dd').format(_startDate))}'),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _startDate,
-                            firstDate: DateTime.now().subtract(const Duration(days: 14)),
-                            lastDate: DateTime.now().add(const Duration(days: 30)),
-                          );
-                          if (picked != null) {
-                            setState(() {
-                              _startDate = picked;
-                              _endDate = picked;
-                            });
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                          alignment: Alignment.centerLeft,
-                        ),
-                        icon: const Icon(Icons.alarm_rounded, size: 18),
-                        label: Text('เวลาที่คาดว่าจะถึง: ${_expectedTime.hour.toString().padLeft(2, '0')}:${_expectedTime.minute.toString().padLeft(2, '0')} น.'),
-                        onPressed: () async {
-                          final picked = await showTimePicker(
-                            context: context,
-                            builder: (ctx, child) => MediaQuery(data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true), child: child!),
-                            initialTime: _expectedTime,
-                          );
-                          if (picked != null) {
-                            setState(() => _expectedTime = picked);
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('2. วันที่ลา (เริ่มต้น - สิ้นสุด):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _getTypeColor(_selectedLeaveType).withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        '1 ครั้ง (จำนวน $daysPreview วัน)',
-                        style: TextStyle(
-                          color: _getTypeColor(_selectedLeaveType),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                          alignment: Alignment.centerLeft,
-                        ),
-                        icon: const Icon(Icons.calendar_today_rounded, size: 18),
-                        label: Text('ตั้งแต่วันที่: ${_formatThaiDate(DateFormat('yyyy-MM-dd').format(_startDate))}'),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _startDate,
-                            firstDate: DateTime.now().subtract(const Duration(days: 30)),
-                            lastDate: DateTime.now().add(const Duration(days: 60)),
-                          );
-                          if (picked != null) {
-                            setState(() {
-                              _startDate = picked;
-                              if (_endDate.isBefore(_startDate)) {
-                                _endDate = _startDate;
-                              }
-                            });
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                          alignment: Alignment.centerLeft,
-                        ),
-                        icon: const Icon(Icons.calendar_today_rounded, size: 18),
-                        label: Text('ถึงวันที่: ${_formatThaiDate(DateFormat('yyyy-MM-dd').format(_endDate))}'),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _endDate.isBefore(_startDate) ? _startDate : _endDate,
-                            firstDate: _startDate,
-                            lastDate: DateTime.now().add(const Duration(days: 60)),
-                          );
-                          if (picked != null) {
-                            setState(() => _endDate = picked);
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 20),
-
-              // 3. REASON
-              const Text('3. เหตุผลในการขอลา / ขอเข้าสาย:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _reasonController,
-                maxLines: 3,
-                decoration: InputDecoration(
-                  hintText: isPersonnelHead && _targetTeacherCode != null
-                      ? 'ระบุเหตุผลในการลาแทนครู (เช่น ครูโทรแจ้งส่วนตัวว่าป่วยกระทันหัน, มีธุระราชการเร่งด่วน...)'
-                      : 'ระบุเหตุผลอย่างละเอียดและชัดเจน เช่น มีธุระส่วนตัวติดต่อราชการ, ป่วยเป็นไข้หวัด...',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  filled: true,
-                  fillColor: const Color(0xFFF8FAFC),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // 4. PHONE
-              const Text('4. เบอร์โทรศัพท์ติดต่อระหว่างลา (ถ้ามี):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _phoneController,
-                keyboardType: TextInputType.phone,
-                decoration: InputDecoration(
-                  hintText: 'เช่น 081-234-5678',
-                  prefixIcon: const Icon(Icons.phone_rounded, size: 20),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  filled: true,
-                  fillColor: const Color(0xFFF8FAFC),
-                ),
-              ),
-              const SizedBox(height: 28),
-
-              // SUBMIT BUTTON
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: isPersonnelHead && _targetTeacherCode != null ? const Color(0xFFD97706) : primaryColor,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  icon: _isSubmitting
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Icon(Icons.send_rounded),
-                  label: Text(
-                    _isSubmitting
-                        ? 'กำลังบันทึกข้อมูล...'
-                        : (isPersonnelHead && _targetTeacherCode != null
-                            ? 'ยืนยันบันทึกการลาแทน ครู$_targetTeacherName'
-                            : 'ส่งคำขอบันทึกการลา'),
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                  ),
-                  onPressed: _isSubmitting ? null : _submitLeaveRequest,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTeacherSelectorForPersonnelHead(Color primaryColor) {
-    final myCode = widget.apiService.currentUser?.code ?? '';
-    final myName = widget.apiService.currentUser?.name ?? '';
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 24),
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF0FDF4),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF22C55E).withValues(alpha: 0.5), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF22C55E).withValues(alpha: 0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF16A34A),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.badge_rounded, color: Colors.white, size: 20),
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'สิทธิ์หัวหน้าบุคคล: เลือกบันทึกการลาสำหรับคุณครู',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF14532D)),
-                    ),
-                    Text(
-                      'กรณีคุณครูไม่ได้พิมพ์ส่งเอง หรือโทรแจ้งส่วนตัว สามารถคลิกเลือกชื่อครูด้านล่างเพื่อเขียนแทนได้ทันที',
-                      style: TextStyle(fontSize: 12, color: Color(0xFF15803D)),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // Teacher Buttons Wrap
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              // Button 1: Myself
-              ChoiceChip(
-                avatar: CircleAvatar(
-                  backgroundColor: _targetTeacherCode == null ? Colors.white : const Color(0xFF16A34A),
-                  child: Icon(Icons.person, size: 14, color: _targetTeacherCode == null ? const Color(0xFF16A34A) : Colors.white),
-                ),
-                label: Text('ตัวฉันเอง ($myName)'),
-                selected: _targetTeacherCode == null,
-                selectedColor: const Color(0xFF16A34A),
-                labelStyle: TextStyle(
-                  color: _targetTeacherCode == null ? Colors.white : const Color(0xFF1E293B),
-                  fontWeight: FontWeight.bold,
-                ),
-                onSelected: (val) {
-                  if (val) {
-                    setState(() {
-                      _targetTeacherCode = null;
-                      _targetTeacherName = null;
-                    });
-                  }
-                },
-              ),
-
-              // Button 2+: All Teachers in school
-              ..._allTeachers.where((t) => t['teacher_code'] != myCode).map((t) {
-                final code = t['teacher_code']?.toString() ?? '';
-                final name = t['teacher_name']?.toString() ?? '';
-                final isSelected = _targetTeacherCode == code;
-
-                return ChoiceChip(
-                  avatar: CircleAvatar(
-                    backgroundColor: isSelected ? Colors.white : Colors.grey.shade300,
-                    child: Icon(Icons.school, size: 14, color: isSelected ? const Color(0xFFD97706) : Colors.black87),
-                  ),
-                  label: Text('ครู$name'),
-                  selected: isSelected,
-                  selectedColor: const Color(0xFFD97706),
-                  labelStyle: TextStyle(
-                    color: isSelected ? Colors.white : const Color(0xFF1E293B),
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  ),
-                  onSelected: (val) {
-                    setState(() {
-                      if (val) {
-                        _targetTeacherCode = code;
-                        _targetTeacherName = name;
-                      } else {
-                        _targetTeacherCode = null;
-                        _targetTeacherName = null;
-                      }
-                    });
-                  },
-                );
-              }),
-            ],
-          ),
-
-          if (_targetTeacherCode != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFEF3C7),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFF59E0B)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline_rounded, size: 18, color: Color(0xFFB45309)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'กำลังบันทึกคำขอแทน: ครู$_targetTeacherName (รหัส $_targetTeacherCode)',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF92400E)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  // -------------------------------------------------------------
   // VIEW 3: จัดการรายการลาครูทุกคน & พิมพ์รายงาน (สำหรับหัวหน้าบุคคล)
   // -------------------------------------------------------------
   Widget _buildPersonnelHeadManagementView(Color primaryColor) {
@@ -1574,15 +1673,17 @@ class _LeaveScreenState extends State<LeaveScreen> {
                     child: const Icon(Icons.manage_accounts_rounded, color: Color(0xFF15803D), size: 24),
                   ),
                   const SizedBox(width: 12),
-                  const Column(
+                  Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'ระบบจัดการรายการลา & พิมพ์รายงาน (สิทธิ์หัวหน้าบุคคล)',
+                        _canEditOthers ? 'ระบบจัดการรายการลา & พิมพ์รายงาน (สิทธิ์หัวหน้าบุคคล)' : 'รายการลาของครูทุกคน & พิมพ์รายงาน',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                       ),
                       Text(
-                        'สามารถแก้ไข/ยกเลิกคำขอลาแทนคุณครู และสั่งพิมพ์รายงานสรุปอย่างเป็นทางการ',
+                        _canEditOthers
+                            ? 'สามารถแก้ไข/ยกเลิกคำขอลาแทนคุณครู และสั่งพิมพ์รายงานสรุปอย่างเป็นทางการ'
+                            : 'ผู้อำนวยการดูและพิมพ์รายงานได้ แก้ไขไม่ได้',
                         style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                       ),
                     ],
@@ -1866,7 +1967,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                 'ยื่นเมื่อ: ${_formatThaiDate(createdAt.split(' ').first)}',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
               ),
-              Row(
+              if (_canEditOthers) Row(
                 children: [
                   OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
@@ -1877,7 +1978,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
                     ),
                     icon: const Icon(Icons.edit_note_rounded, size: 16),
                     label: const Text('แก้ไขข้อมูล'),
-                    onPressed: () => _showEditLeaveDialog(item),
+                    onPressed: () => _showLeaveFormDialog(item),
                   ),
                   const SizedBox(width: 8),
                   OutlinedButton.icon(
@@ -1896,45 +1997,6 @@ class _LeaveScreenState extends State<LeaveScreen> {
             ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildTypeChoiceChip(String type, IconData icon) {
-    final isSelected = _selectedLeaveType == type;
-    final color = _getTypeColor(type);
-
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => setState(() => _selectedLeaveType = type),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            color: isSelected ? color.withValues(alpha: 0.12) : const Color(0xFFF8FAFC),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected ? color : Colors.grey.shade300,
-              width: isSelected ? 2 : 1,
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: isSelected ? color : Colors.grey.shade600, size: 22),
-              const SizedBox(height: 6),
-              Text(
-                type,
-                style: TextStyle(
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                  color: isSelected ? color : const Color(0xFF1E293B),
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

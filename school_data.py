@@ -77,6 +77,8 @@ DATA_SHEETS: List[DataSheet] = [
               help="แบบทดสอบย่อย/หลังเรียนของแต่ละวิชา พร้อมช่องคะแนนที่เชื่อม (unit_slot 0-7 = ช่อง 1-8) • ห้ามแก้ uid"),
     DataSheet("quiz_attempts", "31 ผลแบบทดสอบย่อย", "quiz_attempts", ["quiz_uid", "student_id", "attempt_no"], exclude=("id", "quiz_id"),
               help="ทุกครั้งที่นักเรียนทำแบบทดสอบย่อย (อ้างแบบทดสอบด้วย uid ในแผ่น 30)"),
+    DataSheet("teacher_marks", "32 ลงเวลาครู", "teacher_attendance_marks", ["teacher_code", "date"], term_scoped=False,
+              help="ตารางลงเวลาครู: วันที่ครูมาสาย (ส) หรือไปราชการ (ร) • วันอื่นเป็น มา อัตโนมัติ ส่วน ล/ขส อยู่ในแผ่น 26"),
 ]
 DATA_BY_KEY = {s.key: s for s in DATA_SHEETS}
 NEVER_EXPORT = {"login_pin"}
@@ -135,6 +137,8 @@ def write_sheets(wb, conn, term: str, year: str) -> Dict[str, int]:
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(conn)
+    import teacher_attendance
+    teacher_attendance.ensure(conn)
     font = Font(name="TH SarabunPSK", size=14)
     head = Font(name="Consolas", size=10, bold=True, color="FFFFFF")
     fill = PatternFill("solid", start_color="374151")
@@ -214,6 +218,8 @@ def analyse(content: bytes, term: str, year: str, conn, issues, known_sids=(), k
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(conn)
+    import teacher_attendance
+    teacher_attendance.ensure(conn)
     sheets = read_sheets(content)
     sids = {r[0] for r in conn.execute("SELECT student_id FROM class_students WHERE term = ? AND year = ?", (t, y))} | set(known_sids)         | {_text(r.get("student_id")).strip() for _, r in sheets.get("left_roster", [])}
     all_sids = sids | {r[0] for r in conn.execute("SELECT student_id FROM students")}         | {_text(r.get("student_id")).strip() for _, r in sheets.get("left_students", [])}
@@ -331,6 +337,8 @@ def apply(plan: Dict[str, Any], cur, term: str, year: str) -> Dict[str, Any]:
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(cur)
+    import teacher_attendance
+    teacher_attendance.ensure(cur)
     touched_courses = set()
     written = 0
     for spec in DATA_SHEETS:
