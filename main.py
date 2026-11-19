@@ -7609,6 +7609,56 @@ def teacher_attendance_mark(request: Request, payload: TeacherAttendanceMarkRequ
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "success", "data": data}
 
+
+@app.get("/api/v1/leaves/attendance-print")
+def teacher_attendance_print(request: Request, term: str = Query(...), year: str = Query(...),
+                             period: str = Query("week"), index: Optional[int] = Query(None)):
+    """พิมพ์สรุปการมาปฏิบัติงานของครูตามช่วงที่เลือก (สัปดาห์ / เดือน / ทั้งภาคเรียน): ผู้ดูแลระบบและหัวหน้างานบุคคล"""
+    from fastapi.responses import HTMLResponse
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบ")
+    if not _can_edit_teacher_attendance(user):
+        raise HTTPException(status_code=403, detail="พิมพ์สรุปการมาปฏิบัติงานได้เฉพาะหัวหน้างานบุคคลและผู้ดูแลระบบ")
+    school_name, director_name = "โรงเรียน", "ผู้อำนวยการโรงเรียน"
+    try:
+        with database.get_connection("school_archive.db") as conn:
+            sig = conn.execute("SELECT * FROM school_signatories LIMIT 1;").fetchone()
+            if sig:
+                school_name = sig["school_name"] or school_name
+                director_name = sig["director_name"] or director_name
+    except Exception:
+        pass
+    head_name = ""
+    head_code = school_profile.personnel_head_code()
+    if head_code:
+        with get_connection("school_archive.db") as _conn:
+            _r = _conn.execute("SELECT name FROM school_teachers WHERE code = ?;", (head_code,)).fetchone()
+            head_name = (_r["name"] if _r else "") or ""
+    grid = teacher_attendance.build_grid(term, year)
+    try:
+        html = teacher_attendance.period_report_html(grid, period, index, school_name, director_name, head_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/v1/leaves/day-overview")
+def teacher_day_overview(request: Request, term: str = Query(...), year: str = Query(...),
+                         day: Optional[str] = Query(None, alias="date")):
+    """ใครลา / ไปราชการ / ขอเข้าสาย / มาสาย ในวันนั้น พร้อมคาบสอนของคนนั้น (เชื่อมตารางสอนครู) — ผู้ที่เห็นครูทุกคนเท่านั้น
+    ไม่ส่งเหตุผลการลา/เบอร์โทร"""
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบ")
+    if not _can_view_all_leaves(user):
+        raise HTTPException(status_code=403, detail="ดูข้อมูลครูที่ไม่อยู่ได้เฉพาะผู้บริหารและหัวหน้างานบุคคล")
+    try:
+        data = teacher_attendance.day_overview(term, year, (day or datetime.now().date().isoformat()).strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "data": data}
+
 @app.get("/api/v1/leaves/report-print")
 def print_leaves_report(
     request: Request,

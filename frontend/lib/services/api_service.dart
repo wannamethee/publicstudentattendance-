@@ -3372,6 +3372,12 @@ class ApiService {
     return Map<String, dynamic>.from(r['data'] as Map);
   }
 
+  /// ใครลา / ไปราชการ / ขอเข้าสาย / มาสาย ในวันนั้น พร้อมคาบสอนของคนนั้น (ผู้อำนวยการ ผู้ดูแลระบบ หัวหน้างานบุคคล)
+  Future<Map<String, dynamic>> getTeacherDayOverview({required String term, required String year, required String date}) async {
+    final r = await _examRequest('GET', '/api/v1/leaves/day-overview', query: {'term': term, 'year': year, 'date': date});
+    return Map<String, dynamic>.from(r['data'] as Map);
+  }
+
   /// หัวหน้างานบุคคล / ผู้ดูแลระบบ: ลง ส (มาสาย) หรือ ร (ไปราชการ) ส่ง status '' เพื่อกลับเป็น มา
   Future<void> setTeacherAttendanceMark({
     required String term,

@@ -7,6 +7,7 @@ import '../widgets/attendance_summary_pdf_dialog.dart';
 import '../widgets/app_3d_button.dart';
 import '../widgets/enrollment_chart.dart';
 import '../widgets/responsive_fields_row.dart';
+import '../widgets/teacher_dashboard_view.dart';
 import '../utils/app_theme.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -43,6 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _loadingTeacherLeaves = false;
   String? _teacherLeavesError;
   String _teacherSearchQuery = '';
+  final GlobalKey<TeacherDashboardViewState> _teacherViewKey = GlobalKey<TeacherDashboardViewState>();
 
   @override
   void initState() {
@@ -50,7 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     widget.apiService.dashboardResetNotifier.addListener(_onDashboardResetTriggered);
     _loadSemestersAndDashboard(resetToDefault: true);
     if (widget.apiService.isDirector || widget.apiService.isAdmin || widget.apiService.isPersonnelHead || widget.apiService.currentUser?.code == '102') {
-      _loadTeacherLeavesSummary();
+      _loadTeacherLeavesSummary(reloadView: false);
     }
   }
 
@@ -1839,7 +1841,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // TEACHER LEAVES DASHBOARD (สำหรับ ผู้อำนวยการ / ผู้ดูแลระบบ)
   // ===========================================================================
 
-  Future<void> _loadTeacherLeavesSummary() async {
+  /// reloadView: โหลดส่วนใครไม่อยู่/สถิติรายช่วงใหม่ด้วย (ไม่ต้องตอนเปิดหน้าครั้งแรก เพราะส่วนนั้นโหลดเองอยู่แล้ว)
+  Future<void> _loadTeacherLeavesSummary({bool reloadView = true}) async {
     if (!mounted) return;
     setState(() {
       _loadingTeacherLeaves = true;
@@ -1865,6 +1868,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     }
+    if (reloadView) _teacherViewKey.currentState?.reload();
   }
 
   Future<void> _handleUpdateLeaveStatus(int leaveId, String newStatus, VoidCallback onSuccess) async {
@@ -2037,7 +2041,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     if (_dashboardTarget != 'teacher') {
                       setState(() => _dashboardTarget = 'teacher');
                       if (_teacherLeavesSummary.isEmpty) {
-                        _loadTeacherLeavesSummary();
+                        _loadTeacherLeavesSummary(reloadView: false);
                       }
                     }
                   },
@@ -2213,18 +2217,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: const Icon(Icons.badge_rounded, color: AppColors.purplePrimary, size: 24),
                   ),
                   const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'ข้อมูลสถิติวันลา & วันขอเข้าสายของครูแต่ละคน',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.purpleDark),
-                      ),
-                      Text(
-                        'รายงานสรุปจำนวนวันลากิจ ลาป่วย และการขอเข้าสายของคณะครูทุกคนในโรงเรียน',
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                      ),
-                    ],
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'ครูไม่อยู่วันนี้ & สถิติวันลา วันขอเข้าสายของครู',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.purpleDark),
+                        ),
+                        Text(
+                          'ใครไม่อยู่ในแต่ละวัน (เชื่อมตารางสอน) สถิติรายสัปดาห์ รายเดือน และประวัติการลาของครูทุกคน',
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -2253,9 +2259,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         const SizedBox(height: 16),
 
-        // 2. Overview KPI Stat Row
-        _buildTeacherLeavesKpiRow(_teacherLeavesSummary, isTablet),
-        const SizedBox(height: 20),
+        // 2. ใครไม่อยู่ในแต่ละวัน (เชื่อมตารางสอน) + สถิติรายสัปดาห์ / เดือน / ทั้งภาคเรียน พร้อมกราฟ
+        TeacherDashboardView(key: _teacherViewKey, apiService: widget.apiService),
+        const SizedBox(height: 24),
+
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            'ประวัติการลาและการอนุมัติของครูแต่ละคน',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.purpleDark),
+          ),
+        ),
 
         // 3. Search Bar & Count
         Container(
@@ -2317,157 +2331,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _buildTeacherLeavesTable(filteredTeachers, isDesktop),
         const SizedBox(height: 40),
       ],
-    );
-  }
-
-  /// KPI Row for Teacher Leaves
-  Widget _buildTeacherLeavesKpiRow(List<Map<String, dynamic>> teachers, bool isTablet) {
-    final totalTeachers = teachers.length;
-    final totalKijTimes = teachers.fold<int>(0, (s, t) => s + (t['total_kij_times'] as int? ?? ((t['leaves'] as List?)?.where((l) => l['leave_type'] == 'ลากิจ').length ?? 0)));
-    final totalKijDays = teachers.fold<int>(0, (s, t) => s + (t['total_kij_days'] as int? ?? 0));
-    final totalPuayTimes = teachers.fold<int>(0, (s, t) => s + (t['total_puay_times'] as int? ?? ((t['leaves'] as List?)?.where((l) => l['leave_type'] == 'ลาป่วย').length ?? 0)));
-    final totalPuayDays = teachers.fold<int>(0, (s, t) => s + (t['total_puay_days'] as int? ?? 0));
-    final totalLateTimes = teachers.fold<int>(0, (s, t) => s + (t['total_late_count'] as int? ?? (t['total_late_times'] as int? ?? 0)));
-    final totalLeaveTimes = totalKijTimes + totalPuayTimes;
-    final totalLeaveDays = totalKijDays + totalPuayDays;
-    final teachersWithLeaves = teachers.where((t) => (t['total_leaves_count'] as int? ?? 0) > 0).length;
-
-    return LayoutBuilder(builder: (ctx, constraints) {
-      final width = constraints.maxWidth;
-      final crossAxisCount = width >= 1100 ? 5 : (width >= 650 ? 3 : 2);
-
-      final cards = [
-        _buildKpiCardItem(
-          title: 'ครูทั้งหมด',
-          value: '$totalTeachers',
-          unit: 'ท่าน',
-          subtext: 'มีบันทึกการลา $teachersWithLeaves ท่าน',
-          icon: Icons.groups_rounded,
-          color: const Color(0xFF0284C7),
-          bgColor: const Color(0xFFF0F9FF),
-        ),
-        _buildKpiCardItem(
-          title: 'ลากิจสะสมรวม',
-          value: '$totalKijTimes',
-          unit: 'ครั้ง ($totalKijDays วัน)',
-          subtext: 'ลากิจสะสมรวมทั้งโรงเรียน',
-          icon: Icons.business_center_rounded,
-          color: const Color(0xFFD97706),
-          bgColor: const Color(0xFFFFFBEB),
-        ),
-        _buildKpiCardItem(
-          title: 'ลาป่วยสะสมรวม',
-          value: '$totalPuayTimes',
-          unit: 'ครั้ง ($totalPuayDays วัน)',
-          subtext: 'ลาป่วยสะสมรวมทั้งโรงเรียน',
-          icon: Icons.local_hospital_rounded,
-          color: const Color(0xFFDC2626),
-          bgColor: const Color(0xFFFEF2F2),
-        ),
-        _buildKpiCardItem(
-          title: 'ขอเข้าสายสะสมรวม',
-          value: '$totalLateTimes',
-          unit: 'ครั้ง',
-          subtext: 'บันทึกขอเข้าสายสะสมทั้งโรงเรียน',
-          icon: Icons.access_time_rounded,
-          color: const Color(0xFF4F46E5),
-          bgColor: const Color(0xFFEEF2FF),
-        ),
-        _buildKpiCardItem(
-          title: 'รวมวันลาสะสมทั้งหมด',
-          value: '$totalLeaveTimes',
-          unit: 'ครั้ง ($totalLeaveDays วัน)',
-          subtext: 'ลากิจ + ลาป่วย รวมกันสะสม',
-          icon: Icons.event_note_rounded,
-          color: const Color(0xFF059669),
-          bgColor: const Color(0xFFECFDF5),
-        ),
-      ];
-
-      return Wrap(
-        spacing: 12,
-        runSpacing: 12,
-        children: cards.map((c) {
-          final cardWidth = (width - (crossAxisCount - 1) * 12) / crossAxisCount;
-          return SizedBox(width: cardWidth.clamp(160, 400), child: c);
-        }).toList(),
-      );
-    });
-  }
-
-  Widget _buildKpiCardItem({
-    required String title,
-    required String value,
-    required String unit,
-    required String subtext,
-    required IconData icon,
-    required Color color,
-    required Color bgColor,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withValues(alpha: 0.25), width: 1.2),
-        boxShadow: [
-          BoxShadow(
-            color: color.withValues(alpha: 0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
-              ),
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(icon, size: 18, color: color),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(
-                value,
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                  color: color,
-                  height: 1.1,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                unit,
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade600),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtext,
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
     );
   }
 

@@ -29,7 +29,9 @@ class _LeaveScreenState extends State<LeaveScreen> {
   Map<String, dynamic>? _grid;
   bool _gridLoading = false;
   String? _gridError;
-  int? _weekRange; // null = ช่วงที่มีวันนี้, 1 = สัปดาห์ 1-10, 2 = 11-20, 0 = ทั้งหมด
+  String _period = 'week'; // week | month | term (เปิดมาที่รายสัปดาห์ ตามที่เจ้าของระบบเลือก)
+  final Map<String, int> _periodIndex = {}; // ไม่มี = ช่วงที่มีวันนี้
+  String _sortKey = ''; // เรียงตารางตามยอดรวม: '' | มา | ส | ขส | ล | ร
 
   // รายชื่อครูสำหรับตัวกรองในหน้ารายการลา
   List<Map<String, dynamic>> _allTeachers = [];
@@ -1048,6 +1050,31 @@ class _LeaveScreenState extends State<LeaveScreen> {
     );
   }
 
+  /// ช่วงที่กำลังดู (ยังไม่ได้เลื่อน = ช่วงที่มีวันนี้)
+  TeacherPeriod _currentPeriod(Map<String, dynamic> g) =>
+      TeacherPeriod.of(g, _period, _periodIndex[_period] ?? TeacherPeriod.todayIndex(g, _period));
+
+  void _setPeriod(String kind, [int? index]) => setState(() {
+        _period = kind;
+        if (index != null) _periodIndex[kind] = index;
+      });
+
+  /// พิมพ์สรุปของช่วงที่เลือก (หน้า HTML จากเซิร์ฟเวอร์ เหมือนรายงานการลาเดิม) — ผู้ดูแลระบบและหัวหน้างานบุคคล
+  Future<void> _printPeriod(TeacherPeriod p) async {
+    final g = _grid;
+    if (g == null) return;
+    String q(Object v) => Uri.encodeQueryComponent(v.toString());
+    final url = '${widget.apiService.baseUrl}/api/v1/leaves/attendance-print?term=${q(g['term'])}&year=${q(g['year'])}'
+        '&period=${p.kind}${p.kind == 'term' ? '' : '&index=${p.index}'}';
+    final uri = Uri.parse(url);
+    try {
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) await launchUrl(uri, mode: LaunchMode.platformDefault);
+    } catch (e) {
+      _toast('ไม่สามารถเปิดหน้าพิมพ์สรุปได้: $e', ok: false);
+    }
+  }
+
   Widget _buildAttendanceGridView(Color primaryColor) {
     final narrow = MediaQuery.of(context).size.width < 600;
     if (_grid == null) {
@@ -1073,154 +1100,329 @@ class _LeaveScreenState extends State<LeaveScreen> {
     final canEdit = g['can_edit'] == true;
     final todaySlot = g['today_slot'] as int?;
     final holidays = ((g['holidays'] as List?) ?? const []).map((e) => e as int).toSet();
-    final range = _weekRange ?? (todaySlot != null && todaySlot >= 50 ? 2 : 1);
-    final from = range == 2 ? 10 : 0;
-    final to = range == 1 ? 9 : 19;
-
-    // ภาพรวมวันนี้ (ผู้ที่เห็นครูทุกคน)
-    final todayCounts = <String, int>{for (final s in TeacherMark.order) s: 0};
     final isSchoolDay = todaySlot != null && !holidays.contains(todaySlot);
-    if (isSchoolDay) {
-      for (final r in rows) {
-        final st = ((r['status_list'] as List)[todaySlot] ?? '').toString();
-        if (todayCounts.containsKey(st)) todayCounts[st] = todayCounts[st]! + 1;
-      }
-    }
-    final hint = canEdit
-        ? 'แตะช่องวันเพื่อเปลี่ยนเป็น ส ขส ล หรือ ร • แตะชื่อครูเพื่อดูรายบุคคล'
-        : seeAll
-            ? 'ผู้อำนวยการดูได้อย่างเดียว • แตะชื่อครูเพื่อดูรายบุคคล แตะช่องวันเพื่อดูรายละเอียด'
-            : 'แตะช่องวันเพื่อขอเข้าสาย (ขส) หรือลา (ล) • ส และ ร หัวหน้างานบุคคลเป็นผู้ลง';
+    final dayStarted = g['day_started'] == true;
+    final today = g['today']?.toString() ?? '';
+    final period = _currentPeriod(g);
+    final todayIdx = TeacherPeriod.todayIndex(g, _period);
+    final lastIdx = TeacherPeriod.count(g, _period) - 1;
+    int n(Map<String, dynamic> s, String k) => (s[k] as num?)?.toInt() ?? 0;
+
+    Widget card(Widget child, {EdgeInsets padding = const EdgeInsets.all(16)}) => Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: child,
+        );
 
     Widget legend(String sym, String text) => Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-            width: 26,
-            height: 22,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: sym == '/' ? Colors.white : TeacherMark.fill(sym),
-              border: Border.all(color: const Color(0xFFCBD5E1)),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Text(sym, style: TextStyle(fontSize: sym.length > 1 ? 10.5 : 13, fontWeight: FontWeight.bold, color: TeacherMark.color(sym))),
-          ),
+          TeacherMarkBadge(sym, size: 12),
           const SizedBox(width: 5),
-          Text(text, style: const TextStyle(fontSize: 12.5)),
+          Text(text, style: const TextStyle(fontSize: 12.5, color: Color(0xFF475569))),
         ]);
     Widget swatch(Color c, String text) => Row(mainAxisSize: MainAxisSize.min, children: [
           Container(
-            width: 26,
-            height: 22,
-            decoration: BoxDecoration(color: c, border: Border.all(color: const Color(0xFFCBD5E1)), borderRadius: BorderRadius.circular(4)),
+            width: 24,
+            height: 20,
+            decoration: BoxDecoration(color: c, border: Border.all(color: const Color(0xFFCBD5E1)), borderRadius: BorderRadius.circular(5)),
           ),
           const SizedBox(width: 5),
-          Text(text, style: const TextStyle(fontSize: 12.5)),
+          Text(text, style: const TextStyle(fontSize: 12.5, color: Color(0xFF475569))),
         ]);
+
+    // ---------- วันนี้ ----------
+    Widget? todayBox;
+    if (seeAll && todaySlot != null) {
+      final exceptions = <Widget>[];
+      var present = 0;
+      if (isSchoolDay && dayStarted) {
+        for (final r in rows) {
+          final st = ((r['status_list'] as List)[todaySlot] ?? '').toString();
+          if (st.isNotEmpty && st != 'ล') present++;
+          if (st.isEmpty || st == '/') continue;
+          final inf = (r['info'] as List)[todaySlot];
+          final note = inf is Map
+              ? '${inf['leave_type']}${(inf['time'] ?? '').toString().isNotEmpty ? ' ถึง ${inf['time']} น.' : ''}'
+              : TeacherMark.label[st] ?? st;
+          exceptions.add(InkWell(
+            borderRadius: BorderRadius.circular(99),
+            onTap: () => _onGridCellTap(r, todaySlot),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(4, 3, 12, 3),
+              decoration: BoxDecoration(
+                color: TeacherMark.fill(st),
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(color: TeacherMark.border(st)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                TeacherMarkBadge(st, size: 12),
+                const SizedBox(width: 8),
+                Text('${r['teacher_name']}', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                const SizedBox(width: 6),
+                Text(note, style: const TextStyle(fontSize: 13, color: Color(0xFF475569))),
+              ]),
+            ),
+          ));
+        }
+      }
+      todayBox = card(
+        Wrap(spacing: 14, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 10, height: 10, decoration: const BoxDecoration(color: Color(0xFFF59E0B), shape: BoxShape.circle)),
+            const SizedBox(width: 8),
+            Text('วันนี้ วัน${dayFullThai[todaySlot % 5]}ที่ ${thaiShortDate(today)}',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+          ]),
+          if (!isSchoolDay)
+            const Text('เป็นวันหยุด', style: TextStyle(fontSize: 14, color: Color(0xFF64748B)))
+          else if (!dayStarted)
+            Text('ระบบจะลง / (มา) ให้ทุกคนเวลา ${g['day_starts'] ?? '06:00'} น.', style: const TextStyle(fontSize: 14, color: Color(0xFF475569)))
+          else ...[
+            Text.rich(TextSpan(style: const TextStyle(fontSize: 14, color: Color(0xFF334155)), children: [
+              const TextSpan(text: 'มาแล้ว '),
+              TextSpan(text: '$present', style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
+              TextSpan(text: ' จาก ${rows.length} คน'),
+            ])),
+            if (exceptions.isEmpty)
+              Text('มาครบทุกคน ไม่มีใครลาหรือสาย', style: TextStyle(fontSize: 13.5, color: TeacherMark.color('/'), fontWeight: FontWeight.w600))
+            else
+              ...exceptions,
+          ],
+        ]),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      );
+    } else if (!seeAll && rows.isNotEmpty) {
+      final me = rows.first;
+      final st = todaySlot == null ? '' : ((me['status_list'] as List)[todaySlot] ?? '').toString();
+      final inf = todaySlot == null ? null : (me['info'] as List)[todaySlot];
+      final what = st.isEmpty ? '' : ' · ${inf is Map ? inf['leave_type'] : TeacherMark.label[st]}';
+      final sub = todaySlot == null
+          ? 'วันนี้ไม่อยู่ในภาคเรียนนี้'
+          : !isSchoolDay
+              ? 'วันนี้เป็นวันหยุด'
+              : (dayStarted ? 'ระบบลง / ให้อัตโนมัติเวลา ${g['day_starts'] ?? '06:00'} น.' : 'ระบบจะลง / ให้เวลา ${g['day_starts'] ?? '06:00'} น.');
+      todayBox = card(Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: st.isEmpty ? const Color(0xFFF8FAFC) : TeacherMark.soft(st),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: st.isEmpty ? const Color(0xFFE2E8F0) : TeacherMark.border(st)),
+            ),
+            child: Text(st.isEmpty ? '–' : st,
+                style: TextStyle(fontSize: st.length > 1 ? 17 : 24, fontWeight: FontWeight.w800, color: TeacherMark.color(st))),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('วันนี้ ${thaiShortDate(today)}$what', style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
+              Text(sub, style: const TextStyle(fontSize: 12.5, color: Color(0xFF64748B))),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: TeacherMark.color('ขส'),
+                backgroundColor: TeacherMark.fill('ขส'),
+                side: BorderSide(color: TeacherMark.border('ขส')),
+                minimumSize: const Size(0, 44),
+              ),
+              onPressed: () => _requestFromGrid(me, today, 'ขส'),
+              child: const Text('ขอเข้าสาย (ขส)', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: TeacherMark.color('ล'),
+                backgroundColor: TeacherMark.fill('ล'),
+                side: BorderSide(color: TeacherMark.border('ล')),
+                minimumSize: const Size(0, 44),
+              ),
+              onPressed: () => _requestFromGrid(me, today, 'ล'),
+              child: const Text('แจ้งลา (ล)', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ]),
+      ]));
+    }
+
+    // ---------- ตัวเลขสรุปของช่วง ----------
+    List<PeriodTile> tiles;
+    if (seeAll) {
+      tiles = PeriodTile.forAll(rows, period);
+    } else {
+      final s = rows.isEmpty ? <String, dynamic>{} : period.summaryOf(rows.first);
+      final ok = n(s, 'school_days') > 0;
+      PeriodTile tc(String sym, String key, String unit, [String extra = '']) {
+        final v = n(s, key);
+        return PeriodTile(sym, TeacherMark.label[sym]!, ok ? '$v' : '–', ok ? unit : '',
+            !ok ? 'ยังไม่ถึงช่วงนี้' : (v == 0 ? 'ไม่มีในช่วงนี้' : 'ในช่วงนี้$extra'));
+      }
+
+      tiles = [
+        PeriodTile('/', 'มาปฏิบัติงาน', ok ? '${n(s, 'present')}/${n(s, 'school_days')}' : '–', ok ? 'วัน' : '',
+            ok ? 'ตรงเวลา ${n(s, 'on_time')} วัน' : 'ยังไม่ถึงช่วงนี้'),
+        tc('ส', 'late', 'ครั้ง'),
+        tc('ขส', 'late_request', 'ครั้ง'),
+        tc('ล', 'leave', 'วัน', ' • ป่วย ${n(s, 'leave_puay')} กิจ ${n(s, 'leave_kij')}'),
+        tc('ร', 'official', 'วัน'),
+      ];
+    }
+
+    // ---------- คำแนะนำ ----------
+    String hint;
+    if (_period == 'term') {
+      hint = seeAll
+          ? 'ช่องละ 1 เดือน แสดงเฉพาะ ส ขส ล ร ที่เกิดขึ้น (เครื่องหมายถูก = มาตรงเวลาทุกวัน) • แตะช่องเพื่อเปิดเดือนนั้น'
+          : 'แตะเดือนเพื่อดูปฏิทินของเดือนนั้น';
+    } else if (canEdit) {
+      hint = '${_period == 'month' ? 'แตะแถบ "สัปดาห์ที่ …" เพื่อดูสัปดาห์นั้นแบบช่องใหญ่ • ' : ''}'
+          'แตะช่องวันเพื่อลง ส ขส ล ร • แตะชื่อครูเพื่อดูรายบุคคล • แตะหัวยอดรวมด้านขวาเพื่อเรียงคนที่มากที่สุดขึ้นก่อน';
+    } else if (seeAll) {
+      hint = 'ผู้อำนวยการดูได้อย่างเดียว • แตะชื่อครูเพื่อดูรายบุคคล แตะช่องวันเพื่อดูรายละเอียด • แตะหัวยอดรวมเพื่อเรียง';
+    } else {
+      hint = 'แตะวันเพื่อขอเข้าสาย (ขส) หรือลา (ล) • ส และ ร หัวหน้างานบุคคลเป็นผู้ลง';
+    }
+
+    final navButtonStyle = IconButton.styleFrom(
+      side: const BorderSide(color: Color(0xFFE2E8F0)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    );
+    final navigator = Row(mainAxisSize: MainAxisSize.min, children: [
+      if (_period != 'term')
+        IconButton(
+          tooltip: 'ช่วงก่อนหน้า',
+          style: navButtonStyle,
+          onPressed: period.index <= 0 ? null : () => _setPeriod(_period, period.index - 1),
+          icon: const Icon(Icons.chevron_left_rounded),
+        ),
+      ConstrainedBox(
+        constraints: BoxConstraints(minWidth: narrow ? 180 : 250, maxWidth: narrow ? 240 : 380),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Column(children: [
+            Text(period.title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
+            Text(period.sub, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12.5, color: Color(0xFF64748B))),
+          ]),
+        ),
+      ),
+      if (_period != 'term')
+        IconButton(
+          tooltip: 'ช่วงถัดไป',
+          style: navButtonStyle,
+          onPressed: period.index >= lastIdx ? null : () => _setPeriod(_period, period.index + 1),
+          icon: const Icon(Icons.chevron_right_rounded),
+        ),
+    ]);
+
+    final modeSwitch = SegmentedButton<String>(
+      segments: [
+        const ButtonSegment(value: 'week', label: Text('รายสัปดาห์')),
+        const ButtonSegment(value: 'month', label: Text('รายเดือน')),
+        ButtonSegment(value: 'term', label: Text(narrow ? 'ทั้งภาค' : 'ทั้งภาคเรียน')),
+      ],
+      selected: {_period},
+      showSelectedIcon: false,
+      onSelectionChanged: (v) => _setPeriod(v.first),
+    );
+
+    final mainCard = card(
+      Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Icon(Icons.fact_check_rounded, color: primaryColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text('ตารางลงเวลาครู · ภาคเรียนที่ ${g['term']}/${g['year']}',
+                style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+          ),
+          if (seeAll && canEdit)
+            narrow
+                ? IconButton(tooltip: period.printLabel, onPressed: () => _printPeriod(period), icon: const Icon(Icons.print_rounded))
+                : OutlinedButton.icon(
+                    onPressed: () => _printPeriod(period),
+                    icon: const Icon(Icons.print_rounded, size: 18),
+                    label: Text(period.printLabel),
+                  ),
+          IconButton(
+            tooltip: 'โหลดใหม่',
+            onPressed: _gridLoading ? null : _loadGrid,
+            icon: _gridLoading
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 16,
+          runSpacing: 10,
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            SingleChildScrollView(scrollDirection: Axis.horizontal, child: modeSwitch),
+            navigator,
+            if (_period != 'term' && period.index != todayIdx)
+              TextButton.icon(
+                onPressed: () => setState(() => _periodIndex.remove(_period)),
+                icon: const Icon(Icons.today_rounded, size: 18),
+                label: const Text('กลับไปช่วงที่มีวันนี้'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        PeriodTiles(tiles: tiles),
+        const SizedBox(height: 14),
+        if (rows.isEmpty)
+          _buildEmptyCard('ไม่พบชื่อของท่านในรายชื่อครูของระบบ')
+        else if (seeAll)
+          TeacherPeriodTable(
+            data: g,
+            period: period,
+            sortKey: _sortKey,
+            onSort: (k) => setState(() => _sortKey = _sortKey == k ? '' : k),
+            onCellTap: _onGridCellTap,
+            onNameTap: _showTeacherDetail,
+            onWeekTap: (w) => _setPeriod('week', w),
+            onMonthTap: (k) => _setPeriod('month', k),
+          )
+        else
+          TeacherMyPeriodView(
+            data: g,
+            period: period,
+            row: rows.first,
+            onCellTap: (slot) => _onGridCellTap(rows.first, slot),
+            onMonthTap: (k) => _setPeriod('month', k),
+          ),
+        const SizedBox(height: 12),
+        Wrap(spacing: 14, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          for (final s in TeacherMark.order) legend(s, TeacherMark.label[s]!),
+          swatch(const Color(0xFFE2E8F0), 'วันหยุด'),
+          swatch(const Color(0xFFFDE68A), 'วันนี้'),
+          const Text('นับเฉพาะวันเรียนที่ผ่านมาแล้ว • "มา" รวม ส ขส ร', style: TextStyle(fontSize: 12.5, color: Color(0xFF64748B))),
+        ]),
+        const SizedBox(height: 6),
+        Text(hint, style: TextStyle(fontSize: 12.5, color: primaryColor, fontWeight: FontWeight.w600)),
+      ]),
+      padding: EdgeInsets.all(narrow ? 12 : 18),
+    );
 
     return RefreshIndicator(
       onRefresh: _loadGrid,
       child: ListView(
         padding: EdgeInsets.all(narrow ? 12 : 24),
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Icon(Icons.fact_check_rounded, color: primaryColor),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('ตารางลงเวลาครู ภาคเรียนที่ ${g['term']}/${g['year']}',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
-                ),
-                IconButton(
-                  tooltip: 'โหลดใหม่',
-                  onPressed: _gridLoading ? null : _loadGrid,
-                  icon: _gridLoading
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.refresh_rounded),
-                ),
-              ]),
-              Text(
-                'ทุกวันเรียน ระบบลง / (มา) ให้ครูทุกคนอัตโนมัติเวลา ${g['day_starts'] ?? '06:00'} น. ตามนาฬิกาเครื่องเซิร์ฟเวอร์ '
-                '• วันหยุดใช้ปฏิทินเดียวกับตารางเช็คชื่อนักเรียน',
-                style: const TextStyle(fontSize: 12.5, color: Color(0xFF475569)),
-              ),
-              const SizedBox(height: 4),
-              Text(hint, style: TextStyle(fontSize: 12.5, color: primaryColor, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 10),
-              Wrap(spacing: 14, runSpacing: 8, children: [
-                for (final s in TeacherMark.order) legend(s, TeacherMark.label[s]!),
-                swatch(const Color(0xFFE2E8F0), 'วันหยุด'),
-                swatch(const Color(0xFFFDE68A), 'วันนี้'),
-              ]),
-            ]),
-          ),
-          const SizedBox(height: 14),
-          if (seeAll && isSchoolDay) ...[
-            Text(
-              g['day_started'] == true
-                  ? 'วันนี้ (${thaiShortDate(g['today'].toString())}) ครูทั้งหมด ${rows.length} คน'
-                  : 'วันนี้ (${thaiShortDate(g['today'].toString())}) ระบบจะลง / ให้ครูทุกคนเวลา ${g['day_starts'] ?? '06:00'} น.',
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-            ),
-            const SizedBox(height: 8),
-            Wrap(spacing: 10, runSpacing: 10, children: [
-              for (final s in TeacherMark.order)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: s == '/' ? const Color(0xFFF0FDF4) : TeacherMark.fill(s),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: TeacherMark.color(s).withValues(alpha: 0.3)),
-                  ),
-                  child: Text('${TeacherMark.label[s]} ${todayCounts[s]} คน',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: TeacherMark.color(s))),
-                ),
-            ]),
-            const SizedBox(height: 14),
-          ],
-          if (!seeAll && rows.isNotEmpty) ...[
-            const Text('สรุปของฉัน (นับถึงวันนี้)', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155))),
-            const SizedBox(height: 8),
-            _summaryChips(Map<String, dynamic>.from((rows.first['summary'] as Map?) ?? const {})),
-            const SizedBox(height: 14),
-          ],
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 1, label: Text('สัปดาห์ 1–10')),
-                ButtonSegment(value: 2, label: Text('สัปดาห์ 11–20')),
-                ButtonSegment(value: 0, label: Text('ทั้งหมด 20 สัปดาห์')),
-              ],
-              selected: {range},
-              showSelectedIcon: false,
-              onSelectionChanged: (v) => setState(() => _weekRange = v.first),
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (rows.isEmpty)
-            _buildEmptyCard('ไม่พบชื่อของท่านในรายชื่อครูของระบบ')
-          else
-            TeacherAttendanceGrid(
-              data: g,
-              weekFrom: from,
-              weekTo: to,
-              onCellTap: _onGridCellTap,
-              onNameTap: _showTeacherDetail,
-            ),
-          if (seeAll && rows.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            const Text('สรุปรายบุคคล (นับเฉพาะวันเรียนที่ผ่านมาแล้ว • มา รวม ส ขส ร)',
-                style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF334155))),
-            const SizedBox(height: 8),
-            TeacherAttendanceSummaryTable(rows: rows, onNameTap: _showTeacherDetail),
-          ],
+          if (todayBox != null) ...[todayBox, const SizedBox(height: 14)],
+          mainCard,
           const SizedBox(height: 24),
         ],
       ),
