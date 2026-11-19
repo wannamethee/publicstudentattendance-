@@ -10,6 +10,7 @@ import '../models/semester_config.dart';
 import '../widgets/dmc_import_dialog.dart';
 import '../widgets/dmc_export_dialog.dart';
 import '../widgets/student_photo_upload_dialog.dart';
+import '../widgets/student_photo_capture.dart';
 
 import '../widgets/student_name_dialog.dart';
 
@@ -2620,6 +2621,51 @@ Future<void> _openDatePickerDialog() async {
 
   }
 
+  /// แก้ไขรูปนักเรียนจากปุ่มดินสอ: มีรูปแล้ว = เมนู ถ่ายใหม่ / เลือกใหม่ / จัดตำแหน่ง / ลบ, ยังไม่มี = เลือกถ่ายหรือเลือกรูป
+  /// สิทธิ์เดียวกับการอัปโหลดรูป (ผู้ดูแลระบบ หรือครูประจำชั้นของนักเรียนคนนั้น); เซิร์ฟเวอร์เป็นผู้ตัดสิน
+  Future<void> _editStudentPhoto(Map<String, dynamic> st) async {
+    final sid = '${st['student_id']}';
+    final name = '${st['full_name']}';
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final profile = await widget.apiService.getStudentProfile(sid, term: _selectedTerm, year: _selectedYear);
+      if (!mounted) return;
+      if (profile['can_edit_photo'] != true) {
+        messenger.showSnackBar(const SnackBar(
+          backgroundColor: Colors.red,
+          content: Text('แก้ไขรูปได้เฉพาะครูประจำชั้นของนักเรียนคนนี้ หรือผู้ดูแลระบบ'),
+        ));
+        return;
+      }
+      final photo = Map<String, dynamic>.from((profile['photo'] as Map?) ?? {});
+      if (photo['exists'] == true) {
+        await editStudentPhoto(
+          context,
+          apiService: widget.apiService,
+          studentId: sid,
+          studentName: name,
+          term: _selectedTerm,
+          year: _selectedYear,
+          version: photo['version'],
+        );
+      } else {
+        await pickAndUploadStudentPhoto(
+          context,
+          apiService: widget.apiService,
+          studentId: sid,
+          studentName: name,
+          term: _selectedTerm,
+          year: _selectedYear,
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+        backgroundColor: Colors.red,
+        content: Text(e.toString().replaceFirst('Exception: ', '')),
+      ));
+    }
+  }
+
 
 
   void _openExportDmcDialog() {
@@ -4987,23 +5033,45 @@ Future<void> _openDatePickerDialog() async {
 
                                                                     if (widget.apiService.currentUser?.canEditData ?? false)
 
-                                                                      InkWell(
+                                                                      PopupMenuButton<String>(
 
-                                                                        borderRadius: BorderRadius.circular(4),
+                                                                        tooltip: 'แก้ไข (ชื่อ / รูป)',
 
-                                                                        onTap: () => _editStudentName(st),
+                                                                        padding: EdgeInsets.zero,
 
-                                                                        child: Tooltip(
+                                                                        position: PopupMenuPosition.under,
 
-                                                                          message: 'แก้ไขชื่อ (คำนำหน้า / ชื่อ / สกุล)',
+                                                                        onSelected: (choice) {
+                                                                          if (choice == 'name') _editStudentName(st);
+                                                                          if (choice == 'photo') _editStudentPhoto(st);
+                                                                        },
 
-                                                                          child: Padding(
-
-                                                                            padding: const EdgeInsets.symmetric(horizontal: 2),
-
-                                                                            child: Icon(Icons.edit_outlined, size: 12, color: Colors.grey.shade600),
-
+                                                                        itemBuilder: (_) => const [
+                                                                          PopupMenuItem<String>(
+                                                                            value: 'name',
+                                                                            height: 40,
+                                                                            child: Row(children: [
+                                                                              Icon(Icons.badge_outlined, size: 18),
+                                                                              SizedBox(width: 10),
+                                                                              Text('แก้ไขชื่อ'),
+                                                                            ]),
                                                                           ),
+                                                                          PopupMenuItem<String>(
+                                                                            value: 'photo',
+                                                                            height: 40,
+                                                                            child: Row(children: [
+                                                                              Icon(Icons.photo_camera_outlined, size: 18),
+                                                                              SizedBox(width: 10),
+                                                                              Text('แก้ไขรูป'),
+                                                                            ]),
+                                                                          ),
+                                                                        ],
+
+                                                                        child: Padding(
+
+                                                                          padding: const EdgeInsets.symmetric(horizontal: 2),
+
+                                                                          child: Icon(Icons.edit_outlined, size: 12, color: Colors.grey.shade600),
 
                                                                         ),
 
