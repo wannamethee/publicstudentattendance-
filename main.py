@@ -5043,6 +5043,8 @@ class SaveExamRequest(BaseModel):
     questions: Optional[List[Dict[str, Any]]] = None
     ready: bool = True
     block_ms: Optional[bool] = None
+    shuffle_questions: Optional[bool] = None   # each student gets their own order of the questions (None = keep)
+    shuffle_choices: Optional[bool] = None     # ... and of the choices / statements / pairs inside them (None = keep)
 
 
 class ExamRefRequest(BaseModel):
@@ -5318,7 +5320,8 @@ def save_exam_paper_api(payload: SaveExamRequest, request: Request):
     try:
         data = exams.save_exam(payload.course_code, payload.term, payload.year, payload.exam_type, payload.mode,
                                payload.title or "", payload.link_url or "", payload.duration_min, payload.questions,
-                               payload.ready, current_user(request).get("name") or "", block_ms=payload.block_ms)
+                               payload.ready, current_user(request).get("name") or "", block_ms=payload.block_ms,
+                               shuffle_questions=payload.shuffle_questions, shuffle_choices=payload.shuffle_choices)
     except (ValueError, PermissionError) as e:
         _exam_error(e)
     return {"status": "success", "data": data}
@@ -5558,6 +5561,8 @@ class SaveQuizRequest(BaseModel):
     mode: str = "quiz"          # 'quiz' = made here, 'link' = an outside form (Google Form ...)
     link_url: Optional[str] = None
     slot_points: Optional[float] = None   # "คิดเป็นกี่คะแนน" in its column (None = shares what the column has left)
+    shuffle_questions: Optional[bool] = None   # None = keep (a new quiz shuffles both)
+    shuffle_choices: Optional[bool] = None
 
 
 class QuizLinksRequest(BaseModel):

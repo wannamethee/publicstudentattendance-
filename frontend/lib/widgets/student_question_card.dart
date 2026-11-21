@@ -220,7 +220,8 @@ class StudentPhonePreview extends StatefulWidget {
   final List<Map<String, dynamic>> Function() questions;
   final int? durationMin;
   final double height;
-  const StudentPhonePreview({super.key, required this.api, required this.title, required this.header, required this.questions, this.durationMin, this.height = 760});
+  final bool shuffleQuestions; // the paper's switch: only changes the line under the phone
+  const StudentPhonePreview({super.key, required this.api, required this.title, required this.header, required this.questions, this.durationMin, this.height = 760, this.shuffleQuestions = true});
 
   @override
   State<StudentPhonePreview> createState() => _StudentPhonePreviewState();
@@ -336,7 +337,7 @@ class _StudentPhonePreviewState extends State<StudentPhonePreview> {
       ),
       Padding(
         padding: const EdgeInsets.only(top: 6),
-        child: Text('มุมมองนักเรียน (มือถือ) • ลองกดตอบได้ ไม่บันทึก • ของจริงสลับลำดับข้อให้แต่ละคน',
+        child: Text('มุมมองนักเรียน (มือถือ) • ลองกดตอบได้ ไม่บันทึก • ${widget.shuffleQuestions ? 'ของจริงสลับลำดับข้อให้แต่ละคน' : 'ของจริงเรียงข้อตามนี้ทุกคน'}',
             textAlign: TextAlign.center, style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700)),
       ),
     ]);

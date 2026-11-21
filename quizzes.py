@@ -77,7 +77,8 @@ def ensure(conn) -> None:
         if stmt:
             conn.execute(stmt)
     have = {r[1] for r in conn.execute("PRAGMA table_info(quizzes);")}
-    for col, decl in (("mode", "TEXT NOT NULL DEFAULT 'quiz'"), ("link_url", "TEXT"), ("slot_points", "REAL")):
+    for col, decl in (("mode", "TEXT NOT NULL DEFAULT 'quiz'"), ("link_url", "TEXT"), ("slot_points", "REAL"),
+                      ("shuffle_questions", "INTEGER NOT NULL DEFAULT 1"), ("shuffle_choices", "INTEGER NOT NULL DEFAULT 1")):
         if col not in have:
             conn.execute(f"ALTER TABLE quizzes ADD COLUMN {col} {decl};")
 
@@ -337,7 +338,9 @@ def _dict(r, with_questions: bool = False) -> Dict[str, Any]:
          "class_only": bool(r["class_only"]), "max_attempts": r["max_attempts"], "ready": bool(r["ready"]),
          "question_count": len(qs), "points": _num(_points(qs)), "updated_by": r["updated_by"], "updated_at": r["updated_at"],
          "mode": r["mode"] or "quiz", "link_url": r["link_url"] or "",
-         "slot_points": _num(r["slot_points"]) if "slot_points" in r.keys() and r["slot_points"] else None}
+         "slot_points": _num(r["slot_points"]) if "slot_points" in r.keys() and r["slot_points"] else None,
+         "shuffle_questions": exams.flag_on(r["shuffle_questions"]) if "shuffle_questions" in r.keys() else True,
+         "shuffle_choices": exams.flag_on(r["shuffle_choices"]) if "shuffle_choices" in r.keys() else True}
     if with_questions:
         d["questions"] = qs
     return d
@@ -417,24 +420,28 @@ def save_quiz(course_code: str, term: str, year: str, data: Dict[str, Any], by: 
         raise ValueError(f"จำนวนครั้งที่ทำได้ 1–{MAX_ATTEMPTS_LIMIT} (0 = ไม่จำกัด)")
     vals = (title, slot, json.dumps(qs, ensure_ascii=False), dur, _fmt(s) if s else None, _fmt(e) if e else None,
             1 if data.get("class_only") else 0, tries, 1 if ready else 0, by, _fmt(now()), mode, link, worth)
+    # สลับลำดับข้อ / สลับตัวเลือกให้นักเรียนแต่ละคน: not sent = keep what the quiz has (a new quiz shuffles both)
+    sh = {k: data.get(k) for k in ("shuffle_questions", "shuffle_choices")}
     with _conn(db_path) as conn:
         if quiz_id:
             old = _row(conn, quiz_id)
             if (old["course_code"], str(old["term"]), str(old["year"])) != (course_code, str(term), str(year)):
                 raise PermissionError("แบบทดสอบนี้ไม่ใช่ของรายวิชานี้")
+            flags = tuple(int(exams.flag_on(old[k]) if sh[k] is None else bool(sh[k])) for k in sh)
             conn.execute(
                 """UPDATE quizzes SET title = ?, unit_slot = ?, questions_json = ?, duration_min = ?, start_at = ?, end_at = ?,
                           class_only = ?, max_attempts = ?, ready = ?, updated_by = ?, updated_at = ?, mode = ?, link_url = ?,
-                          slot_points = ? WHERE id = ?;""",
-                vals + (int(quiz_id),))
+                          slot_points = ?, shuffle_questions = ?, shuffle_choices = ? WHERE id = ?;""",
+                vals + flags + (int(quiz_id),))
         else:
             import uuid
+            flags = tuple(int(True if sh[k] is None else bool(sh[k])) for k in sh)
             cur = conn.execute(
                 """INSERT INTO quizzes (title, unit_slot, questions_json, duration_min, start_at, end_at, class_only, max_attempts,
-                                        ready, updated_by, updated_at, mode, link_url, slot_points, uid, course_code, term, year,
-                                        created_by, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
-                vals + (uuid.uuid4().hex, course_code, str(term), str(year), by, _fmt(now())))
+                                        ready, updated_by, updated_at, mode, link_url, slot_points, shuffle_questions, shuffle_choices,
+                                        uid, course_code, term, year, created_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                vals + flags + (uuid.uuid4().hex, course_code, str(term), str(year), by, _fmt(now())))
             quiz_id = cur.lastrowid
     apply_scores(course_code, term, year, db_path)
     return get_quiz(quiz_id, db_path)
@@ -722,13 +729,7 @@ def start_attempt(quiz_id: int, student: Dict[str, Any], db_path: str = DB_PATH)
         if not source:
             raise ValueError("ครูยังไม่ได้ใส่ข้อสอบ")
         rng = random.Random(f"quiz:{r['id']}:{sid}:{random.random()}")
-        order = list(range(len(source)))
-        rng.shuffle(order)
-        paper = []
-        for qi in order:
-            q = dict(source[qi], src=qi)
-            q.setdefault("points", 1)
-            paper.append(exams.shuffle_question(q, rng))
+        paper = exams.shuffled_paper(source, rng, exams.flag_on(r["shuffle_questions"]), exams.flag_on(r["shuffle_choices"]))
         started = now()
         ends = [x for x in (_parse(av["ends_at"]),) if x]
         if r["duration_min"]:

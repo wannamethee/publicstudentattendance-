@@ -137,6 +137,8 @@ def write_sheets(wb, conn, term: str, year: str) -> Dict[str, int]:
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(conn)
+    import exams
+    exams.ensure_columns(conn)
     import teacher_attendance
     teacher_attendance.ensure(conn)
     font = Font(name="TH SarabunPSK", size=14)
@@ -218,6 +220,8 @@ def analyse(content: bytes, term: str, year: str, conn, issues, known_sids=(), k
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(conn)
+    import exams
+    exams.ensure_columns(conn)
     import teacher_attendance
     teacher_attendance.ensure(conn)
     sheets = read_sheets(content)
@@ -337,6 +341,8 @@ def apply(plan: Dict[str, Any], cur, term: str, year: str) -> Dict[str, Any]:
     t, y = str(term), str(year)
     import quizzes
     quizzes.ensure(cur)
+    import exams
+    exams.ensure_columns(cur)
     import teacher_attendance
     teacher_attendance.ensure(cur)
     touched_courses = set()

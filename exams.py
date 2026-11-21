@@ -67,6 +67,16 @@ def _parse(s: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def ensure_columns(conn) -> None:
+    """ครูเลือกได้ว่าจะสลับลำดับข้อ / สลับตัวเลือกให้นักเรียนแต่ละคนหรือไม่ (default: สลับทั้งสองอย่าง)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(exams);")}
+    if not have:
+        return
+    for col in ("shuffle_questions", "shuffle_choices"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE exams ADD COLUMN {col} INTEGER NOT NULL DEFAULT 1;")
+
+
 def _conn(db_path: str):
     global _ready
     conn = database.get_connection(db_path)
@@ -120,6 +130,7 @@ def _conn(db_path: str):
             # มส.: whether the paper shuts out students below 80% (default yes), and the teacher's ticks letting one sit
             if "block_ms" not in {r[1] for r in conn.execute("PRAGMA table_info(exams);")}:
                 conn.execute("ALTER TABLE exams ADD COLUMN block_ms INTEGER NOT NULL DEFAULT 1;")
+            ensure_columns(conn)
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS exam_permits (
                        course_code TEXT NOT NULL, term TEXT NOT NULL, year TEXT NOT NULL, student_id TEXT NOT NULL,
@@ -662,7 +673,9 @@ def _exam_dict(r, with_answers: bool) -> Dict[str, Any]:
          "exam_type": r["exam_type"], "label": EXAM_TYPES[r["exam_type"]], "mode": r["mode"],
          "title": r["title"] or "", "link_url": r["link_url"] or "", "duration_min": r["duration_min"],
          "question_count": len(qs), "ready": bool(r["ready"]), "updated_by": r["updated_by"], "updated_at": r["updated_at"],
-         "block_ms": bool(r["block_ms"]) if "block_ms" in r.keys() else True}
+         "block_ms": bool(r["block_ms"]) if "block_ms" in r.keys() else True,
+         "shuffle_questions": flag_on(r["shuffle_questions"]) if "shuffle_questions" in r.keys() else True,
+         "shuffle_choices": flag_on(r["shuffle_choices"]) if "shuffle_choices" in r.keys() else True}
     if with_answers:
         d["questions"] = qs
     return d
@@ -680,8 +693,11 @@ def get_exam(course_code: str, term: str, year: str, exam_type: str, db_path: st
 
 def save_exam(course_code: str, term: str, year: str, exam_type: str, mode: str, title: str, link_url: str,
               duration_min: Optional[int], questions: Any, ready: bool, updated_by: str, db_path: str = DB_PATH,
-              block_ms: Optional[bool] = None) -> Dict[str, Any]:
-    """block_ms: True = students with มส. cannot sit (unless ticked), False = everyone sits, None = keep as is."""
+              block_ms: Optional[bool] = None, shuffle_questions: Optional[bool] = None,
+              shuffle_choices: Optional[bool] = None) -> Dict[str, Any]:
+    """block_ms: True = students with มส. cannot sit (unless ticked), False = everyone sits, None = keep as is.
+    shuffle_questions / shuffle_choices: each student's own order of the questions / of the choices inside them
+    (True = shuffle, the default for a new paper; None = keep as is)."""
     if exam_type not in EXAM_TYPES:
         raise ValueError("ประเภทข้อสอบไม่ถูกต้อง")
     if mode not in ("link", "quiz"):
@@ -702,15 +718,21 @@ def save_exam(course_code: str, term: str, year: str, exam_type: str, mode: str,
     with _conn(db_path) as conn:
         old = _exam_row(conn, course_code, term, year, exam_type)
         block = (1 if old is None else old["block_ms"]) if block_ms is None else (1 if block_ms else 0)
+        keep_q = flag_on(old["shuffle_questions"]) if old is not None else True
+        keep_c = flag_on(old["shuffle_choices"]) if old is not None else True
+        sh_q = 1 if (keep_q if shuffle_questions is None else shuffle_questions) else 0
+        sh_c = 1 if (keep_c if shuffle_choices is None else shuffle_choices) else 0
         conn.execute(
-            """INSERT INTO exams (course_code, term, year, exam_type, mode, title, link_url, duration_min, questions_json, ready, updated_by, updated_at, block_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO exams (course_code, term, year, exam_type, mode, title, link_url, duration_min, questions_json, ready, updated_by, updated_at, block_ms,
+                                  shuffle_questions, shuffle_choices)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(course_code, term, year, exam_type) DO UPDATE SET
                  mode = excluded.mode, title = excluded.title, link_url = excluded.link_url, duration_min = excluded.duration_min,
                  questions_json = excluded.questions_json, ready = excluded.ready,
-                 updated_by = excluded.updated_by, updated_at = excluded.updated_at, block_ms = excluded.block_ms;""",
+                 updated_by = excluded.updated_by, updated_at = excluded.updated_at, block_ms = excluded.block_ms,
+                 shuffle_questions = excluded.shuffle_questions, shuffle_choices = excluded.shuffle_choices;""",
             (course_code, str(term), str(year), exam_type, mode, (title or "").strip(), link_url if mode == "link" else "",
-             dur, json.dumps(qs, ensure_ascii=False), 1 if ready else 0, updated_by, _fmt(now()), block))
+             dur, json.dumps(qs, ensure_ascii=False), 1 if ready else 0, updated_by, _fmt(now()), block, sh_q, sh_c))
     return get_exam(course_code, term, year, exam_type, db_path)
 
 
@@ -855,18 +877,92 @@ def student_question(p: Dict[str, Any]) -> Dict[str, Any]:
     return q
 
 
-def shuffle_question(q: Dict[str, Any], rng: random.Random) -> Dict[str, Any]:
-    """A student's own order: choices, statements and pairs move; letters of a matching set stay as on paper."""
+# A choice whose meaning depends on where it stands.
+#  - "ถูกทุกข้อ" / "ไม่มีข้อใดถูก" / "all of the above" only make sense after the others: they stay last, in the order
+#    the teacher gave them, and the rest are shuffled in front of them.
+#  - A choice that names other choices ("ข้อ ก และ ข ถูก", "a and b") would point at the wrong ones once the letters
+#    move, so a question holding one keeps all its choices where they are.
+_TAIL_TH = re.compile(
+    r"ทุกข้อ|ทุกตัวเลือก|ทุกคำตอบ|ไม่มีข้อ(?:ใด|ถูก|ผิด)|ไม่มี(?:ตัวเลือก|คำตอบ)|ถูกทั้งหมด|ผิดทั้งหมด|ทั้งหมดถูก|ทั้งหมดผิด|"
+    r"ถูกหมด|ผิดหมด|ข้างต้น|ข้างบน|^\s*ทั้งหมด\s*$")
+# ASCII word edges on purpose: Python's word boundary also counts Thai letters, Dart's (the hint in the editor) does not
+_W0, _W1 = r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"
+_TAIL_EN = re.compile(_W0 + r"(?:all|none|neither|both)\s+of\s+(?:the|these|those|them)" + _W1 + "|"
+                      + _W0 + r"(?:all|none)\s+the\s+above" + _W1, re.I)
+_NAMES_TH = (
+    re.compile(r"(?:ข้อ|ตัวเลือก|คำตอบ)\s*(?:ที่\s*)?[กขคงจ](?![ก-๙])"),
+    re.compile(r"(?<![ก-๙])[กขคงจ]\s*(?:และ|กับ|หรือ|,|/|-|–|ถึง)\s*[กขคงจ](?![ก-๙])"),
+    re.compile(r"(?:ข้อ|ตัวเลือก|คำตอบ)\s*(?:ที่\s*)?[1-9๑-๙]"),
+    re.compile(_W0 + r"(?:option|choice|answer)s?\s*[A-Ea-e1-5]" + _W1, re.I),
+)
+_NAMES_UPPER = re.compile(_W0 + r"[A-E]\s*(?:and|or|&|,)\s*[A-E]" + _W1)
+_NAMES_LOWER = re.compile(_W0 + r"[a-e]\s*(?:and|or|&|,)\s*[a-e]" + _W1)
+_NAMES_NUMBER = re.compile(_W0 + r"[1-5]\s*(?:and|or|&|,)\s*[1-5]" + _W1)
+
+
+def _is_tail_choice(text: str) -> bool:
+    return bool(_TAIL_TH.search(text) or _TAIL_EN.search(text))
+
+
+def _names_other_choices(text: str, labels: Optional[str] = None) -> bool:
+    if any(p.search(text) for p in _NAMES_TH) or _NAMES_UPPER.search(text):
+        return True
+    return bool((labels == "latin" and _NAMES_LOWER.search(text)) or (labels == "number" and _NAMES_NUMBER.search(text)))
+
+
+def choice_shuffle_kind(q: Dict[str, Any]) -> Optional[str]:
+    """How a choice question's choices are treated: 'fixed' (kept in order), 'tail' (some stay last), None (all shuffled)."""
+    if _qtype(q) != "choice" or q.get("as_image"):
+        return None
+    texts = [str(c) for c in q.get("choices") or []]
+    if any(_names_other_choices(t, q.get("labels")) for t in texts):
+        return "fixed"
+    tail = [_is_tail_choice(t) for t in texts]
+    if all(tail):
+        return "fixed"
+    return "tail" if any(tail) else None
+
+
+def shuffle_question(q: Dict[str, Any], rng: random.Random, choices: bool = True) -> Dict[str, Any]:
+    """A student's own order: choices, statements and pairs move; letters of a matching set stay as on paper.
+    choices=False (the teacher switched it off for this paper) leaves all of them as written."""
     t = _qtype(q)
+    if not choices:
+        return q
     if t == "choice" and not q.get("as_image"):          # in a picture the letters are printed: keep their order
-        perm = list(range(len(q["choices"])))
+        kind = choice_shuffle_kind(q)
+        n = len(q["choices"])
+        if kind == "fixed":
+            return q
+        tail = [i for i, c in enumerate(q["choices"]) if _is_tail_choice(str(c))] if kind == "tail" else []
+        perm = [i for i in range(n) if i not in tail]
         rng.shuffle(perm)
+        perm += tail
         q.update(choices=[q["choices"][p] for p in perm], answer=perm.index(q["answer"]))
     elif t in ("truefalse", "match"):
         items = list(q["items"])
         rng.shuffle(items)
         q["items"] = items
     return q
+
+
+def flag_on(v: Any) -> bool:
+    """A switch stored as 0/1 (an empty cell from a data file counts as on, the default)."""
+    return v not in (0, "0", False)
+
+
+def shuffled_paper(source: List[Dict[str, Any]], rng: random.Random, questions: bool = True,
+                   choices: bool = True) -> List[Dict[str, Any]]:
+    """One student's copy of the teacher's questions (each keeps `src`, its place in the teacher's list)."""
+    order = list(range(len(source)))
+    if questions:
+        rng.shuffle(order)
+    paper = []
+    for qi in order:
+        q = dict(source[qi], src=qi)
+        q.setdefault("points", 1)
+        paper.append(shuffle_question(q, rng, choices))
+    return paper
 
 
 def _paper_for_student(conn, att) -> Dict[str, Any]:
@@ -971,13 +1067,7 @@ def start_attempt(exam_id: int, student: Dict[str, Any], db_path: str = DB_PATH)
         if not source:
             raise ValueError("ครูยังไม่ได้ใส่ข้อสอบ")
         rng = random.Random(f"{exam_id}:{sid}:{random.random()}")
-        order = list(range(len(source)))
-        rng.shuffle(order)
-        paper = []
-        for qi in order:
-            q = dict(source[qi], src=qi)
-            q.setdefault("points", 1)
-            paper.append(shuffle_question(q, rng))
+        paper = shuffled_paper(source, rng, flag_on(r["shuffle_questions"]), flag_on(r["shuffle_choices"]))
         started = now()
         deadline = _parse(w["end_at"])
         if r["duration_min"]:

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../services/api_service.dart';
 import '../utils/app_theme.dart';
+import '../widgets/choice_shuffle_hint.dart';
 import '../widgets/exam_timetable_view.dart';
 import '../widgets/no_exam_right_dialog.dart';
 import '../widgets/question_kinds.dart';
@@ -1182,6 +1183,8 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
   String _mode = 'quiz';
   bool _ready = true;
   bool _blockMs = true; // นักเรียนติด มส. สอบไม่ได้ (ยกเว้นที่ครูติ๊กอนุญาต)
+  bool _shuffleQuestions = true; // นักเรียนแต่ละคนได้ลำดับข้อไม่เหมือนกัน
+  bool _shuffleChoices = true; // ... และลำดับตัวเลือก / ข้อย่อยในแต่ละข้อไม่เหมือนกัน
   final _title = TextEditingController();
   final _link = TextEditingController();
   final _duration = TextEditingController();
@@ -1233,6 +1236,8 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
         _qStart = DateTime.tryParse('${p['start_at'] ?? ''}');
         _qEnd = DateTime.tryParse('${p['end_at'] ?? ''}');
         _classOnly = p['class_only'] == true;
+        _shuffleQuestions = p['shuffle_questions'] != false;
+        _shuffleChoices = p['shuffle_choices'] != false;
         _maxAttempts = (p['max_attempts'] as num?)?.toInt() ?? 1;
         _mode = '${p['mode'] ?? 'quiz'}';
         _link.text = '${p['link_url'] ?? ''}';
@@ -1269,6 +1274,8 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
           _mode = '${p['mode']}';
           _ready = p['ready'] == true;
           _blockMs = p['block_ms'] != false;
+          _shuffleQuestions = p['shuffle_questions'] != false;
+          _shuffleChoices = p['shuffle_choices'] != false;
           _title.text = '${p['title'] ?? ''}';
           _link.text = '${p['link_url'] ?? ''}';
           _duration.text = p['duration_min'] == null ? '' : '${p['duration_min']}';
@@ -1315,6 +1322,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
             header: _phoneHeader,
             durationMin: int.tryParse(_duration.text.trim()),
             height: (size.height - 80).clamp(400, 820).toDouble(),
+            shuffleQuestions: _shuffleQuestions,
             questions: _studentQuestions,
           ),
           Positioned(right: 4, top: 4, child: IconButton.filledTonal(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx))),
@@ -1540,6 +1548,8 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
           'start_at': iso(_qStart),
           'end_at': iso(_qEnd),
           'class_only': _classOnly,
+          'shuffle_questions': _shuffleQuestions,
+          'shuffle_choices': _shuffleChoices,
           'max_attempts': _maxAttempts,
           'ready': _ready,
           'mode': _mode,
@@ -1567,6 +1577,8 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
         'duration_min': int.tryParse(_duration.text.trim()),
         'ready': _ready,
         'block_ms': _blockMs,
+        'shuffle_questions': _shuffleQuestions,
+        'shuffle_choices': _shuffleChoices,
         'questions': _mode == 'quiz' ? _questions.map((q) => q.toJson()).toList() : [],
       });
       if (!mounted) return;
@@ -1755,6 +1767,7 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
                       header: _phoneHeader,
                       durationMin: int.tryParse(_duration.text.trim()),
                       height: phoneH,
+                      shuffleQuestions: _shuffleQuestions,
                       questions: _studentQuestions,
                     ),
                   ),
@@ -1801,12 +1814,37 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
           ],
         ),
         const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          const Text('กันแอบดูกัน', style: TextStyle(fontWeight: FontWeight.w600)),
+          Tooltip(
+            message: 'นักเรียนแต่ละคนได้ลำดับข้อไม่เหมือนกัน',
+            child: FilterChip(
+              label: const Text('สลับลำดับข้อ'),
+              selected: _shuffleQuestions,
+              onSelected: (v) => setState(() => _shuffleQuestions = v),
+            ),
+          ),
+          Tooltip(
+            message: 'นักเรียนแต่ละคนได้ลำดับตัวเลือก ก ข ค ง ไม่เหมือนกัน (รวมถึงข้อย่อยของถูก/ผิด และจับคู่)',
+            child: FilterChip(
+              label: const Text('สลับตัวเลือกในแต่ละข้อ'),
+              selected: _shuffleChoices,
+              onSelected: (v) => setState(() => _shuffleChoices = v),
+            ),
+          ),
+        ]),
+        if (!_shuffleQuestions && !_shuffleChoices)
+          _note(Icons.warning_amber_rounded, 'ปิดทั้งสองอย่าง: นักเรียนทุกคนเห็นข้อสอบเรียงเหมือนกันเป๊ะ เพื่อนข้างๆ แอบดูได้ง่าย', color: const Color(0xFFB45309))
+        else
+          _note(Icons.shuffle_rounded,
+              'ปิด "สลับลำดับข้อ" เมื่อมีชุดข้อที่ต้องอ่านเรื่องเดียวกัน เช่น "ใช้ข้อความนี้ตอบข้อ 5–7" • ตัวเลือก "ถูกทุกข้อ / ไม่มีข้อใดถูก" ระบบย้ายไปไว้ท้ายสุดเสมอ • ข้อที่มีตัวเลือกอ้างถึงตัวเลือกอื่น เช่น "ข้อ ก และ ข ถูก" หรือข้อที่แสดงเป็นภาพ จะไม่สลับตัวเลือก (ลำดับข้อยังสลับ)'),
+        const SizedBox(height: 8),
         if (widget.isQuiz)
           _note(Icons.calculate_outlined,
-              'ทุกแบบ (ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze) ระบบตรวจกับเฉลยเองทันทีที่นักเรียนส่ง • ชุดข้อย่อยคิดคะแนนต่อช่อง • สลับข้อและตัวเลือกให้แต่ละคน • ยังไม่กด "เปิดให้นักเรียนเห็น" = ร่าง (ไม่นับคะแนน)')
+              'ทุกแบบ (ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze) ระบบตรวจกับเฉลยเองทันทีที่นักเรียนส่ง • ชุดข้อย่อยคิดคะแนนต่อช่อง • ยังไม่กด "เปิดให้นักเรียนเห็น" = ร่าง (ไม่นับคะแนน)')
         else
           _note(Icons.calculate_outlined,
-              'ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze ระบบตรวจกับเฉลยเอง (ชุดข้อย่อยคิดคะแนนต่อช่อง ครูกดให้ถูก/ผิดรายช่องได้ในหน้า "ผลสอบ") • ข้อเขียนตอบ ถ่ายภาพส่ง ครูให้คะแนนในหน้า "ผลสอบ" • คะแนนรวมคิดตามสัดส่วนคะแนนเต็มช่อง${examTypes[widget.examType]} (ทศนิยม 1 ตำแหน่ง ปัดขึ้นเสมอ) แล้วเติมให้เอง • สลับข้อให้แต่ละคน • สอบได้ครั้งเดียว'),
+              'ปรนัย เติมตัวเลข เติมคำ ถูก/ผิด จับคู่ cloze ระบบตรวจกับเฉลยเอง (ชุดข้อย่อยคิดคะแนนต่อช่อง ครูกดให้ถูก/ผิดรายช่องได้ในหน้า "ผลสอบ") • ข้อเขียนตอบ ถ่ายภาพส่ง ครูให้คะแนนในหน้า "ผลสอบ" • คะแนนรวมคิดตามสัดส่วนคะแนนเต็มช่อง${examTypes[widget.examType]} (ทศนิยม 1 ตำแหน่ง ปัดขึ้นเสมอ) แล้วเติมให้เอง • สอบได้ครั้งเดียว'),
         if (_attempts > 0)
           _note(Icons.warning_amber_rounded, 'มีนักเรียนเริ่มทำแล้ว $_attempts คน — การแก้ข้อสอบมีผลกับครั้งที่เริ่มทำหลังจากนี้เท่านั้น', color: const Color(0xFFB45309)),
         const SizedBox(height: 8),
@@ -2155,7 +2193,11 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
                   ),
                   Text('${choiceLetters[j]}.'),
                   const SizedBox(width: 6),
-                  Expanded(child: TextField(controller: q.choices[j], decoration: const InputDecoration(isDense: true, hintText: 'ตัวเลือก'))),
+                  Expanded(
+                      child: TextField(
+                          controller: q.choices[j],
+                          onChanged: (_) => setState(() {}), // the shuffle note under the choices follows what is typed
+                          decoration: const InputDecoration(isDense: true, hintText: 'ตัวเลือก'))),
                   if (q.choices.length > 2)
                     IconButton(
                       tooltip: 'ลบตัวเลือก',
@@ -2184,6 +2226,10 @@ class _ExamEditorDialogState extends State<ExamEditorDialog> {
                 Text(q.answer == null ? 'กดวงกลมหน้าคำตอบที่ถูก' : 'เฉลย ${choiceLetters[q.answer!]}',
                     style: TextStyle(fontSize: 12, color: q.answer == null ? Colors.orange.shade800 : const Color(0xFF15803D))),
               ]),
+              // what the shuffle does with this question's choices (only when something is special)
+              if (_shuffleChoices)
+                if (choiceShuffleHint(choiceShuffleKind([for (final c in q.choices) c.text], labels: q.labels)) case final hint?)
+                  _note(Icons.push_pin_outlined, hint, color: const Color(0xFF6D28D9)),
             ],
             if (q.type == 'number')
               Wrap(spacing: 10, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
